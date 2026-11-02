@@ -1,0 +1,209 @@
+# Parqueando Ando
+
+Sistema web para consultar y reportar la disponibilidad de los parqueaderos del campus.
+
+## Instalación
+
+```bash
+cd parqueando-ando
+python -m venv venv
+venv\Scripts\activate          # Windows
+source venv/bin/activate       # macOS / Linux
+
+pip install -r requirements.txt
+python manage.py migrate
+python manage.py createsuperuser
+python manage.py runserver
+```
+
+Abre [http://127.0.0.1:8000/](http://127.0.0.1:8000/).
+
+Los 4 parqueaderos del campus se crean solos al correr `migrate`, ya con sus
+coordenadas y sus apodos de búsqueda.
+
+## Rutas principales
+
+| Ruta | Qué es | Acceso |
+|---|---|---|
+| `/` | Home: buscador, mapa, disponibilidad, plano interactivo, reportes | Público |
+| `/?estado=...&vehiculo=...` | Home filtrado (FR12): `estado` = `available`/`limited`/`full`, `vehiculo` = `car`/`motorcycle`/`accessibility` | Público |
+| `/informacion/` | Información general de los parqueaderos (FR35): horarios, tarifas, pagos, normas, contacto | Público |
+| `/historial/` | Historial de disponibilidad (FR13): `?lot=<slug>&periodo=24h/7d/30d`, resumen, promedio por hora y registros | Público |
+| `/estadisticas/` | Estadísticas de ocupación (FR33): general, por parqueadero, por tipo de celda y movimiento de las últimas 24 h | Público |
+| `/accounts/login/` | Iniciar sesión (FR2). Staff → dashboard, resto → home | Público |
+| `/accounts/profile/` | Perfil de usuario (FR3): editar datos y contraseña | Solo usuarios |
+| `/api/notifications/` | Notificaciones de disponibilidad (FR14) | Solo usuarios |
+| `/dashboard/statistics/` | Reportes y estadísticas (FR18) | Solo staff |
+| `/dashboard/import-availability/` | Importar disponibilidad desde una API REST externa (FR19), botón en el dashboard | Solo staff |
+| `/api/simulador/disponibilidad/` | API externa de prueba para FR19 (solo con `DEBUG=True`) | Público |
+| `/parking/<slug>/` | Detalle de un parqueadero | Público |
+| `/dashboard/` | Panel de administrador | Solo staff |
+| `/dashboard/mapper/<slug>/` | Mapeador visual del plano | Solo staff |
+| `/dashboard/reports/` | Gestión de reportes de usuarios | Solo staff |
+| `/admin/` | Admin de Django (parqueaderos, planos, avisos, coordenadas, apodos) | Solo staff |
+
+El login de `/dashboard/` y `/admin/` es el mismo usuario.
+
+### APIs internas (las usa el home para actualizarse solo)
+
+| Ruta | Devuelve |
+|---|---|
+| `/api/lots/` | Estado actual de todos los parqueaderos |
+| `/api/search/?q=...` | Búsqueda inteligente |
+| `/api/favorites/<id>/toggle/` | Marca/desmarca favorito |
+| `/metro-status/` | Estado del Metro (caché + refresco en segundo plano) |
+
+## Sprint 3 — qué cambió
+
+**La página se actualiza sola, sin recargar.** Antes cada reporte hacía POST +
+redirect, o sea recarga completa: la persona reportaba un cupo y el navegador la
+devolvía al comienzo del home. Ahora los reportes se envían por fetch y solo se
+repintan los números de esa tarjeta. El scroll, los planos abiertos y lo que
+estés escribiendo se quedan donde estaban. Además el estado se refresca solo
+cada 30 segundos.
+
+**El Metro ya no bloquea la página.** Antes el scraping corría dentro del
+request: con la caché vencida, abrir el navegador headless podía dejar el home
+cargando 30 segundos. Ahora el servidor responde con lo último que tenga
+guardado y refresca en segundo plano. Además, si una sección (semáforo,
+horarios, noticias) no se puede refrescar, se conserva la anterior marcada como
+desactualizada en vez de quedar vacía, y cada una muestra su propia antigüedad.
+
+**El mapa sale de la base de datos.** Antes los marcadores estaban escritos a
+mano en el HTML. Ahora cada parqueadero tiene `latitude`/`longitude` editables
+desde `/admin/`, y el mapa pinta círculos de color según el estado con los cupos
+libres adentro, encuadra solo todos los parqueaderos y se actualiza en vivo.
+
+**Buscador inteligente.** No hay que escribir el nombre exacto: entiende apodos
+("el de ingeniería"), errores de dedo ("parqeadero nrte") e intenciones sin
+nombre ("el más desocupado", "uno para moto", "para discapacitados"). Los apodos
+se editan desde `/admin/` → campo "Otros nombres", sin tocar código.
+
+**Favoritos.** Se pueden marcar con la estrella de cada tarjeta y aparecen de
+primeros. Ver abajo cómo conectarlos al login.
+
+## Rediseño visual (Sprint 3 · UI/UX)
+
+Cambio **solo de apariencia**: no se agregaron funciones, rutas, modelos ni APIs.
+Estilo "Urban Solutions": azul noche, bronce, crema/mármol; Roboto Condensed (títulos) + Inter (texto).
+
+- Todo el estilo vive en `core/static/core/css/theme.css` (tokens `--pa-*` + ajustes de Bootstrap),
+  enlazado al final del `<head>` de cada plantilla. Para cambiar un color de marca, edita los tokens
+  de `:root` en ese archivo.
+- Logo propio en `core/static/core/img/` (`logo-mark.svg`, `favicon.svg`). Íconos: Bootstrap Icons
+  (la moto es un ícono propio, clase `pa-ico-moto`).
+- Colores de estado (disponible / limitado / lleno) conservados, siempre acompañados de texto.
+- Accesibilidad: contraste ≥ 4.5:1 en los pares de color de marca, foco visible con teclado y
+  `prefers-reduced-motion` respetado. Probado sin desbordes a 360, 768 y 1280 px.
+- Corrección menor de HTML: en el home sobraba un `</div>` por tarjeta, y el perfil no cargaba
+  el JavaScript de Bootstrap (el menú de usuario no abría).
+- Letra grande y legible: base de 18 px (17 px en móvil). Para cambiar el tamaño de todo el sitio,
+  edita `--pa-base-size` en el bloque "FASE 6" de `theme.css`.
+- Fuentes e íconos se cargan por CDN (como Bootstrap); sin internet se usan fuentes del sistema.
+
+## Sprint 4 — importar desde una API externa (FR19)
+
+El sistema puede traer la ocupación de los parqueaderos desde otra API REST
+(por ejemplo, los sensores de las porterías) en vez de depender solo de los
+reportes de los usuarios. La API debe responder a un `GET` con JSON así:
+
+```json
+{"parkings": [
+  {"slug": "parqueadero-norte", "occupied_cars": 120, "occupied_motorcycles": 30, "occupied_accessibility": 2}
+]}
+```
+
+Se valida todo antes de guardar: parqueaderos que no existen o valores que no
+son enteros >= 0 se ignoran (y se avisa), y lo que supere la capacidad se ajusta.
+Hay dos formas de correrlo:
+
+- **Dashboard:** `/dashboard/` → "Importar disponibilidad desde una API externa".
+- **Consola** (sirve para programarlo cada X minutos):
+  `python manage.py import_availability --url <URL>`
+
+La URL se configura con la variable de entorno `EXTERNAL_PARKING_API_URL`. Como
+EAFIT no publica una API real, en desarrollo el proyecto trae un simulador en
+`/api/simulador/disponibilidad/` y el dashboard lo propone por defecto. La
+lógica está en `core/external_api.py`.
+
+## Historial de disponibilidad (FR13)
+
+Cada vez que cambia la ocupación de un parqueadero (reporte de un usuario,
+cambio en el plano, importación desde la API externa o edición en `/admin/`)
+se guarda un `AvailabilitySnapshot` (`core/models.py`). Si la ocupación no
+cambió, no se guarda nada. La página `/historial/` los muestra por parqueadero
+y periodo. La lógica está en `core/availability_history.py` y la señal que lo
+dispara en `core/signals.py`. La migración `0015` crea un primer registro por
+parqueadero existente. Después de actualizar, corre `python manage.py migrate`.
+
+## Autenticación segura (FR20)
+
+- **Bloqueo por intentos fallidos:** 5 intentos fallidos con el mismo usuario
+  desde la misma IP bloquean el login 15 minutos (`accounts/throttle.py`). Con
+  varios servidores hay que configurar una caché compartida.
+- **Contraseñas** de mínimo 10 caracteres (más los validadores de Django).
+- **Cookies/sesión:** `HttpOnly`, `SameSite=Lax`, la sesión caduca a las 8 horas
+  o al cerrar el navegador.
+- **Producción:** con `DJANGO_DEBUG=0` la app exige `DJANGO_SECRET_KEY` y
+  `DJANGO_ALLOWED_HOSTS`, y activa HTTPS obligatorio, cookies `Secure` y HSTS.
+  En desarrollo no hace falta configurar nada.
+- **Login por correo** sin distinguir mayúsculas; un correo repetido ya no tumba el login.
+
+## Login (FR2) y favoritos
+
+El login (FR2) ya está en `/accounts/login/` y funciona con cualquier usuario
+que exista (creado desde `/admin/`, `createsuperuser` o el futuro registro).
+Después de entrar, el staff va al dashboard y el resto al home.
+
+Los favoritos que la persona marcó antes de iniciar sesión pasan solos a su
+cuenta. Si el registro quiere dejar a la persona logueada al terminar, que use:
+
+```python
+from core.auth_views import log_user_in
+
+log_user_in(request, user)   # en vez de login(request, user)
+```
+
+(No uses `login()` + `attach_session_favorites_to_user()` a secas: `login()`
+cambia la clave de sesión y los favoritos no se encontrarían.) Si el registro
+tiene una URL llamada `register`, el formulario de login muestra solo el link
+"Regístrate".
+
+## Cómo montar el plano de un parqueadero
+
+1. En `/admin/`, abre el parqueadero y sube una imagen en "Imagen del plano".
+2. Ve a `/dashboard/` → "📍 Ubicar espacios en el plano".
+3. Haz clic sobre el plano para crear cada espacio. Arrastra para reubicar, usa
+   "Girar 90°" para rotarlo.
+
+## Estructura del proyecto
+
+- `core/` — modelos, vistas públicas y APIs, búsqueda (`search.py`), favoritos
+  (`favorites.py`), scraping del Metro (`metro_status.py`), login/logout
+  (`auth_views.py`, FR2), filtros (`filters.py`, FR12) e información general de
+  los parqueaderos (`parking_info.py`, FR35 — tarifas, horarios, etc. se editan ahí),
+  importación desde una API externa (`external_api.py`, FR19) y estadísticas de
+  ocupación (`occupancy_stats.py`, FR33).
+- `reports/` — reportes de usuarios (espacio disponible/ocupado/información incorrecta).
+- `administration/` — dashboard, mapeador visual del plano, gestión de reportes, y `/admin/`.
+
+## Auditoría administrativa y despliegue AWS
+
+El dashboard exclusivo para staff incluye conteos de reportes pendientes, validados e inválidos, acciones del día y las acciones administrativas recientes. Las ediciones de parqueaderos y las validaciones/eliminaciones de reportes quedan en `/admin/` → Registro de acciones administrativas. La migración `administration/0002_adminactionlog.py` crea el registro.
+
+Cuando un espacio del plano se marca como ocupado, el conteo del parqueadero y la API pública se sincronizan desde las celdas vigentes por tipo de vehículo; después de tres horas sin actualización la celda vuelve a quedar como “sin dato”.
+
+Para instalar en EC2 con PostgreSQL en RDS y una Elastic IP, sigue [`../GUIA_AWS_PARQUEANDO_ANDO.md`](../GUIA_AWS_PARQUEANDO_ANDO.md). La base de datos con datos reales no venía en el ZIP; la guía incluye cómo migrar un respaldo de SQLite o PostgreSQL.
+
+## Problemas comunes
+
+- **"Sin conexión a internet en el servidor"** en la sección del Metro: la
+  máquina no tiene salida a internet, o algo la bloquea (firewall, antivirus,
+  VPN). No afecta al resto del sitio: se sigue mostrando la última información
+  conocida y se reintenta solo.
+- **El semáforo de líneas del Metro sale vacío**: requiere Playwright, que es
+  opcional (`pip install playwright && playwright install chromium`). Sin él,
+  las noticias sí funcionan.
+- **El mapa sale vacío**: falta poner coordenadas en `/admin/` → "Ubicación en
+  el mapa".
+- **El plano no aparece en una tarjeta**: falta subir la imagen del plano en `/admin/`.

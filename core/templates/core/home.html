@@ -1,0 +1,1799 @@
+{% load static %}
+{% load l10n %}
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Parqueando Ando</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        /* ============================================================
+           MAPA (FR8) — Sprint 3
+           Antes los marcadores estaban escritos a mano en el HTML y no
+           sabían nada de la base de datos. Ahora se dibujan desde los
+           parqueaderos reales, con el color de su estado de ocupación.
+           ============================================================ */
+        #parking-map {
+            height: 460px;
+            width: 100%;
+            border-radius: 16px;
+            position: relative;
+            z-index: 1;
+            overflow: hidden;
+            border: 1px solid #dee2e6;
+        }
+
+        /* Marcador propio: un círculo con el número de cupos libres.
+           Se ve mejor que el pin azul por defecto de Leaflet y además
+           comunica el estado de un vistazo, sin tener que hacer clic. */
+        .map-pin {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 42px;
+            height: 42px;
+            border-radius: 50%;
+            border: 3px solid #fff;
+            box-shadow: 0 2px 8px rgba(0,0,0,.35);
+            color: #fff;
+            font-weight: 700;
+            font-size: .78rem;
+            transition: transform .15s ease;
+        }
+        .map-pin:hover { transform: scale(1.12); }
+        .map-pin-available { background-color: #198754; }
+        .map-pin-limited   { background-color: #fd7e14; }
+        .map-pin-full      { background-color: #dc3545; }
+        .map-pin-favorite::after {
+            content: "★";
+            position: absolute;
+            top: -6px;
+            right: -4px;
+            font-size: .8rem;
+            color: #ffc107;
+            text-shadow: 0 0 3px rgba(0,0,0,.6);
+        }
+        .leaflet-popup-content { margin: .7rem .9rem; }
+        .leaflet-popup-content-wrapper { border-radius: 12px; }
+
+        .map-legend {
+            background: rgba(255,255,255,.94);
+            padding: .5rem .7rem;
+            border-radius: 10px;
+            box-shadow: 0 1px 6px rgba(0,0,0,.25);
+            font-size: .75rem;
+            line-height: 1.5;
+        }
+        .map-legend .dot {
+            display: inline-block;
+            width: 11px; height: 11px;
+            border-radius: 50%;
+            margin-right: 5px;
+            vertical-align: -1px;
+        }
+
+        /* ============================================================
+           TARJETAS DE PARQUEADERO
+           ============================================================ */
+        .lot-card {
+            border-radius: 1rem;
+            transition: box-shadow .2s ease, border-color .2s ease;
+        }
+        /* Resalta brevemente la tarjeta cuando sus datos se actualizan
+           solos, para que el cambio no pase desapercibido. */
+        .lot-card.just-updated {
+            box-shadow: 0 0 0 3px rgba(13, 110, 253, .35) !important;
+        }
+        .lot-card.is-favorite { border-color: #ffc107; }
+
+        .fav-btn {
+            border: none;
+            background: none;
+            font-size: 1.35rem;
+            line-height: 1;
+            cursor: pointer;
+            padding: 0 .25rem;
+            color: #ced4da;
+            transition: transform .15s ease, color .15s ease;
+        }
+        .fav-btn:hover { transform: scale(1.2); color: #ffc107; }
+        .fav-btn.is-favorite { color: #ffc107; }
+
+        /* ============================================================
+           PLANO INTERACTIVO POR ESPACIO (Sprint 2)
+           ============================================================ */
+        .lot-plan-wrap { text-align: center; }
+        .lot-plan-instance {
+            position: relative;
+            display: inline-block;
+            max-width: 100%;
+            user-select: none;
+        }
+        .lot-plan-instance img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+            border-radius: 10px;
+        }
+        .spot-marker {
+            position: absolute;
+            transform: translate(-50%, -50%) rotate(var(--spot-rotation, 0deg));
+            border-radius: 3px;
+            border: 2px dashed #d9bf9f;
+            font-size: 0.62rem;
+            font-weight: 700;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            padding: 0;
+            line-height: 1;
+            transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease;
+        }
+        .spot-marker:hover {
+            border-color: #0f2747;
+            transform: translate(-50%, -50%) rotate(var(--spot-rotation, 0deg)) scale(1.12);
+            box-shadow: 0 0 0 3px rgba(10, 88, 202, .25);
+            z-index: 5;
+        }
+        .spot-empty    { background-color: #198754; }
+        .spot-occupied { background-color: #dc3545; }
+        .spot-unknown  { background-color: #6c757d; }
+        .legend-swatch {
+            display: inline-block;
+            width: 16px; height: 16px;
+            border-radius: 3px;
+            border: 2px dashed #d9bf9f;
+            vertical-align: middle;
+        }
+
+        /* ============================================================
+           BUSCADOR (Sprint 3)
+           ============================================================ */
+        #search-results .list-group-item { cursor: pointer; }
+        #search-results .list-group-item:hover { background-color: #f1f6ff; }
+
+        /* ============================================================
+           AVISOS FLOTANTES (toasts)
+           Reemplazan a los mensajes que obligaban a recargar la página.
+           ============================================================ */
+        #toast-stack {
+            position: fixed;
+            bottom: 1rem;
+            right: 1rem;
+            z-index: 1090;
+            display: flex;
+            flex-direction: column;
+            gap: .5rem;
+            max-width: min(92vw, 380px);
+        }
+
+        .metro-updated-badge { font-size: .75rem; }
+        .metro-stale { opacity: .72; }
+
+        /* ============================================================
+           FILTROS (FR12) — estado + tipo de vehículo
+           ============================================================ */
+        .filter-bar {
+            background: #fff;
+            border: 1px solid #e9ecef;
+            border-radius: 1rem;
+            padding: .85rem 1rem;
+        }
+        .filter-row { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+        .filter-row + .filter-row { margin-top: .6rem; }
+        .filter-label {
+            font-size: .72rem;
+            font-weight: 600;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+            color: #6c757d;
+            min-width: 5.5rem;
+        }
+        .chip-group { display: flex; flex-wrap: wrap; gap: .4rem; }
+        .filter-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: .4rem;
+            padding: .32rem .8rem;
+            border-radius: 999px;
+            border: 1px solid #dee2e6;
+            background: #fff;
+            color: #495057;
+            font-size: .875rem;
+            text-decoration: none;
+            user-select: none;
+            transition: background-color .15s ease, border-color .15s ease, color .15s ease, transform .1s ease;
+        }
+        .filter-chip:hover { border-color: #adb5bd; background: #f8f9fa; color: #212529; }
+        .filter-chip:active { transform: scale(.97); }
+        .filter-chip.active { background: #212529; border-color: #212529; color: #fff; }
+        .filter-chip.active[data-filter-value="available"] { background: #198754; border-color: #198754; }
+        .filter-chip.active[data-filter-value="limited"]   { background: #ffc107; border-color: #ffc107; color: #212529; }
+        .filter-chip.active[data-filter-value="full"]      { background: #dc3545; border-color: #dc3545; }
+        .filter-chip.active[data-filter-group="vehiculo"]:not([data-filter-value=""]) {
+            background: #0d6efd; border-color: #0d6efd;
+        }
+        .chip-dot { width: 8px; height: 8px; border-radius: 50%; }
+        .dot-available { background: #198754; }
+        .dot-limited   { background: #ffc107; }
+        .dot-full      { background: #dc3545; }
+        .filter-chip.active .chip-dot { box-shadow: 0 0 0 2px rgba(255,255,255,.85); }
+        .chip-count {
+            font-size: .72rem;
+            font-weight: 600;
+            background: rgba(0,0,0,.07);
+            border-radius: 999px;
+            padding: 0 .45rem;
+            min-width: 1.4rem;
+            text-align: center;
+        }
+        .filter-chip.active .chip-count { background: rgba(255,255,255,.28); }
+        .lot-card.filtered-out { display: none !important; }
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Roboto+Condensed:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{% static 'core/css/theme.css' %}">
+    <link rel="icon" type="image/svg+xml" href="{% static 'core/img/favicon.svg' %}">
+</head>
+
+<body class="bg-light">
+
+    <!-- Barra superior: login/logout (FR2) e información general (FR35) -->
+    {% include "core/_navbar.html" with active="home" %}
+
+    <!-- Avisos flotantes: aquí aparecen las confirmaciones de los reportes
+         sin recargar la página ni mover el scroll. -->
+    <div id="toast-stack" aria-live="polite" aria-atomic="true"></div>
+
+    <!-- Mensajes de Django: solo se ven si el navegador no tiene JavaScript
+         (en ese caso los reportes sí hacen POST + redirect, como antes). -->
+    <div class="container mt-3">
+        {% if messages %}
+            {% for message in messages %}
+                <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            {% endfor %}
+        {% endif %}
+    </div>
+
+    <div class="container text-center py-4">
+        <h1 class="display-5 hero-title"><img src="{% static 'core/img/logo-mark.svg' %}" alt="" class="hero-mark">arqueando-Ando</h1>
+        <p class="lead text-muted mb-0">Parquea. Sigue. Aprende.</p>
+    </div>
+
+    <!-- ================================================================
+         BUSCADOR INTELIGENTE (Sprint 3)
+         No exige escribir el nombre exacto: entiende apodos ("el de
+         ingeniería"), errores de dedo ("parqeadero nrte") e intenciones
+         sin nombre ("el más desocupado", "uno para moto"). La lógica
+         vive en core/search.py y los apodos se editan desde /admin/.
+         ================================================================ -->
+    <div class="container mb-4">
+        <div class="position-relative" style="max-width: 640px; margin: 0 auto;">
+            <div class="input-group input-group-lg shadow-sm">
+                <span class="input-group-text bg-white border-end-0"><i class="bi bi-search" aria-hidden="true"></i></span>
+                <input type="search" id="search-input"
+                       class="form-control border-start-0"
+                       placeholder="Ej: el de ingeniería, sur, el más desocupado, uno para moto"
+                       autocomplete="off"
+                       aria-label="Buscar parqueadero">
+                <button class="btn btn-outline-secondary d-none" type="button" id="search-clear">✕</button>
+            </div>
+
+            <div id="search-results" class="list-group shadow position-absolute w-100 d-none"
+                 style="z-index: 1050; top: 100%; margin-top: .35rem;"></div>
+
+            <p class="form-text text-center mt-2 mb-0">
+                Puedes escribir como le dices tú al parqueadero; no tiene que ser el nombre exacto.
+            </p>
+        </div>
+    </div>
+
+    <!-- ================================================================
+         REQUERIMIENTO FR8: Mostrar mapa del estacionamiento
+         Sprint 3: los marcadores ya NO están escritos a mano aquí — se
+         generan desde la base de datos (ParkingLot.latitude/longitude) y
+         se pintan del color del estado real de ocupación, actualizándose
+         solos junto con el resto de la página.
+         ================================================================ -->
+    <div class="container mb-5">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+            <h2 class="h4 mb-0">Mapa del campus</h2>
+            <span class="badge text-bg-light text-muted" id="map-updated-badge">Actualizado ahora</span>
+        </div>
+        <p class="text-muted">
+            Cada círculo muestra cuántas celdas libres hay. Toca uno para ver el detalle.
+        </p>
+
+        <div id="parking-map"></div>
+
+        {% if not map_lots %}
+        <div class="alert alert-warning small mt-2 mb-0">
+            Ningún parqueadero tiene coordenadas configuradas todavía, así que el mapa sale vacío.
+            Un administrador puede agregarlas desde /admin/ en la sección "Ubicación en el mapa".
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- ================================================================
+         REQUERIMIENTO FR9: Recomendación de parqueadero
+         ================================================================ -->
+    <!-- El banner se renderiza SIEMPRE (oculto si en este momento no hay
+         recomendación porque todos están llenos). Si se renderizara solo
+         cuando hay recomendación, al liberarse un cupo más tarde el
+         JavaScript no tendría dónde escribirla y el banner nunca
+         aparecería sin recargar la página. -->
+    <div class="container mb-4">
+        <div class="alert alert-success d-flex align-items-center gap-2 mb-0 {% if not recommended_lot %}d-none{% endif %}"
+             role="alert" id="recommendation-banner">
+            <span class="fs-4"><i class="bi bi-hand-thumbs-up" aria-hidden="true"></i></span>
+            <div>
+                <strong>Parqueadero recomendado: <span data-rec="name">{{ recommended_lot.name|default:"" }}</span></strong>
+                <div class="small">
+                    Es el que tiene mayor disponibilidad en este momento
+                    (<span data-rec="available">{{ recommended_lot.available_spaces|default:"0" }}</span>
+                    de <span data-rec="total">{{ recommended_lot.total_capacity|default:"0" }}</span> celdas libres).
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ================================================================
+         REQUERIMIENTO FR5 & FR6: Listado de parqueaderos y ocupación
+         Cada parqueadero es una tarjeta de ancho completo con su
+         información siempre visible. Solo el plano interactivo se
+         despliega/oculta.
+
+         Sprint 3: cada dato que cambia lleva un atributo data-field, para
+         que el JavaScript pueda repintarlo en vivo (cada 30s y después
+         de cada reporte) SIN recargar la página. Así la persona no
+         pierde el scroll ni lo que tenía abierto.
+         ================================================================ -->
+    <div class="container mb-5" id="disponibilidad">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+            <h2 class="h4 mb-0">Disponibilidad de parqueaderos</h2>
+            {% if has_favorites %}
+            <span class="badge text-bg-warning">★ Tus favoritos aparecen primero</span>
+            {% endif %}
+        </div>
+
+        {% if parking_lots %}
+        <!-- ============================================================
+             FR12 – Filtrar parqueaderos por disponibilidad
+             Dos filtros que se combinan: estado (Disponible / Limitado /
+             Lleno) y "con cupo para" un tipo de vehículo. Los botones
+             son links (?estado=...&vehiculo=...), así funcionan sin
+             JavaScript y el link se puede compartir; con JavaScript se
+             aplican al instante, sin recargar, y se mantienen cuando los
+             datos se actualizan solos cada 30s. Reglas en core/filters.py.
+             ============================================================ -->
+        <div class="filter-bar shadow-sm mb-3" id="filter-bar"
+             data-initial-estado="{{ active_filters.status|default:'' }}"
+             data-initial-vehiculo="{{ active_filters.vehicle|default:'' }}">
+            <div class="filter-row">
+                <span class="filter-label">Estado</span>
+                <div class="chip-group" role="group" aria-label="Filtrar por estado">
+                    {% for opt in status_filter_options %}
+                    <a href="{{ opt.href }}" class="filter-chip {% if opt.active %}active{% endif %}"
+                       data-filter-group="estado" data-filter-value="{{ opt.value }}"
+                       aria-pressed="{% if opt.active %}true{% else %}false{% endif %}">
+                        {% if opt.value %}<span class="chip-dot dot-{{ opt.value }}"></span>{% endif %}
+                        {{ opt.label }}
+                        <span class="chip-count" data-status-count="{{ opt.value|default:'all' }}">{{ opt.count }}</span>
+                    </a>
+                    {% endfor %}
+                </div>
+            </div>
+            <div class="filter-row">
+                <span class="filter-label">Con cupo para</span>
+                <div class="chip-group" role="group" aria-label="Filtrar por tipo de vehículo">
+                    {% for opt in vehicle_filter_options %}
+                    <a href="{{ opt.href }}" class="filter-chip {% if opt.active %}active{% endif %}"
+                       data-filter-group="vehiculo" data-filter-value="{{ opt.value }}"
+                       aria-pressed="{% if opt.active %}true{% else %}false{% endif %}">
+                        {% if opt.value == 'car' %}<i class="bi bi-car-front" aria-hidden="true"></i>{% elif opt.value == 'motorcycle' %}<i class="pa-ico pa-ico-moto" aria-hidden="true"></i>{% elif opt.value == 'accessibility' %}<i class="bi bi-universal-access" aria-hidden="true"></i>{% endif %}
+                        {{ opt.label }}
+                    </a>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <div class="d-flex justify-content-between align-items-center small text-muted mb-2" aria-live="polite">
+            <span>
+                Mostrando <strong id="filter-visible-count">{{ visible_lots_count }}</strong>
+                de {{ parking_lots|length }} parqueaderos
+            </span>
+            <a href="{% url 'home' %}#disponibilidad" class="link-secondary {% if not active_filters.status and not active_filters.vehicle %}d-none{% endif %}"
+               id="filter-clear">Quitar filtros ✕</a>
+        </div>
+
+        <div class="card border-0 shadow-sm mb-3 {% if visible_lots_count %}d-none{% endif %}" id="filter-empty">
+            <div class="card-body text-center py-5">
+                <div class="fs-1 mb-2"><i class="bi bi-search" aria-hidden="true"></i></div>
+                <p class="mb-1 fw-semibold">Ningún parqueadero coincide con estos filtros ahora mismo.</p>
+                <p class="text-muted small mb-3">La disponibilidad cambia todo el tiempo: esta lista se actualiza sola.</p>
+                <a href="{% url 'home' %}#disponibilidad" class="btn btn-sm btn-outline-secondary" data-filter-reset>Ver todos</a>
+            </div>
+        </div>
+
+        {% for item in parking_lots %}
+        <div class="card lot-card shadow-sm mb-3 {% if item.is_favorite %}is-favorite{% endif %} {% if item.lot.occupancy_status == 'full' %}border-danger{% endif %} {% if not item.matches_filter %}filtered-out{% endif %}"
+             data-lot-card="{{ item.lot.id }}"
+             data-lot-slug="{{ item.lot.slug }}"
+             data-status="{{ item.lot.occupancy_status }}"
+             data-available-car="{{ item.lot.available_cars }}"
+             data-available-motorcycle="{{ item.lot.available_motorcycles }}"
+             data-available-accessibility="{{ item.lot.available_accessibility }}"
+             id="lot-card-{{ item.lot.slug }}">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+                    <h3 class="h5 mb-0 d-flex align-items-center gap-1">
+                        <!-- ============================================
+                             FAVORITOS (Sprint 3)
+                             Funciona sin login: mientras no haya cuentas,
+                             el favorito se recuerda por sesión del
+                             navegador. Cuando el login exista, los
+                             favoritos anónimos pasan solos a la cuenta
+                             (ver core/favorites.py).
+                             ============================================ -->
+                        <button type="button"
+                                class="fav-btn {% if item.is_favorite %}is-favorite{% endif %}"
+                                data-fav-toggle="{{ item.lot.id }}"
+                                aria-pressed="{% if item.is_favorite %}true{% else %}false{% endif %}"
+                                title="{% if item.is_favorite %}Quitar de favoritos{% else %}Marcar como favorito{% endif %}">
+                            {% if item.is_favorite %}★{% else %}☆{% endif %}
+                        </button>
+                        <span>{{ item.lot.name }}</span>
+                        {% if user.is_authenticated %}
+                        <button type="button"
+                                class="btn btn-sm {% if item.notifications_enabled %}btn-warning{% else %}btn-outline-secondary{% endif %} ms-1"
+                                data-notification-toggle="{{ item.lot.id }}"
+                                aria-pressed="{% if item.notifications_enabled %}true{% else %}false{% endif %}"
+                                title="{% if item.notifications_enabled %}Desactivar notificaciones{% else %}Avisarme cuando haya cupos{% endif %}">
+                            {% if item.notifications_enabled %}<i class="bi bi-bell-fill" aria-hidden="true"></i>{% else %}<i class="bi bi-bell-slash" aria-hidden="true"></i>{% endif %}
+                        </button>
+                        {% else %}
+                        <a class="btn btn-sm btn-outline-secondary ms-1"
+                           href="{% url 'accounts:login' %}?next={{ request.get_full_path|urlencode }}"
+                           title="Inicia sesión para activar notificaciones"><i class="bi bi-bell-slash" aria-hidden="true"></i></a>
+                        {% endif %}
+                    </h3>
+                    <div class="d-flex align-items-center gap-2">
+                        <span class="badge
+                            {% if item.lot.occupancy_status == 'available' %}bg-success
+                            {% elif item.lot.occupancy_status == 'limited' %}bg-warning text-dark
+                            {% else %}bg-danger{% endif %}"
+                            data-field="status-badge">
+                            {{ item.lot.occupancy_status_display }}
+                        </span>
+                    </div>
+                </div>
+
+                <!-- Avisos administrativos (ParkingLotNotice), escritos
+                     por el admin desde /admin/. Distintos de los reportes
+                     de usuarios (FR21/22/30). -->
+                <div data-field="notices">
+                    {% for notice in item.lot.active_notices %}
+                    <div class="alert alert-warning py-2 px-3 small mb-2"><i class="bi bi-info-circle" aria-hidden="true"></i> {{ notice.message }}</div>
+                    {% endfor %}
+                </div>
+
+                <!-- FR7: estado de ocupación en detalle -->
+                <div class="mb-3" aria-label="Estado de ocupación">
+                    <div class="d-flex justify-content-between">
+                        <small class="text-muted">Ocupación</small>
+                        <small class="text-muted"><span data-field="percentage">{{ item.lot.occupancy_percentage }}</span>%</small>
+                    </div>
+                    <div class="progress" role="progressbar"
+                         aria-valuenow="{{ item.lot.occupancy_percentage_css }}"
+                         aria-valuemin="0" aria-valuemax="100"
+                         style="height: 8px;">
+                        <div class="progress-bar
+                            {% if item.lot.occupancy_status == 'available' %}bg-success
+                            {% elif item.lot.occupancy_status == 'limited' %}bg-warning
+                            {% else %}bg-danger{% endif %}"
+                            data-field="progress-bar"
+                            style="width: {{ item.lot.occupancy_percentage_css|unlocalize }}%;">
+                        </div>
+                    </div>
+                    <small class="text-muted">
+                        <span data-field="occupied">{{ item.lot.occupied_spaces }}</span> ocupadas ·
+                        <span data-field="available">{{ item.lot.available_spaces }}</span> disponibles
+                        de <span data-field="total">{{ item.lot.total_capacity }}</span> celdas
+                    </small>
+                </div>
+
+                {% if item.lot.has_vehicle_type_breakdown %}
+                <div class="d-flex flex-wrap gap-2 mb-3" aria-label="Distribución de cupos">
+                    <span class="badge text-bg-primary"><i class="bi bi-car-front" aria-hidden="true"></i> Carros:
+                        <span data-field="available-cars">{{ item.lot.available_cars }}</span>/<span data-field="capacity-cars">{{ item.lot.capacity_cars }}</span></span>
+                    <span class="badge text-bg-secondary"><i class="pa-ico pa-ico-moto" aria-hidden="true"></i> Motos:
+                        <span data-field="available-motorcycles">{{ item.lot.available_motorcycles }}</span>/<span data-field="capacity-motorcycles">{{ item.lot.capacity_motorcycles }}</span></span>
+                    <span class="badge text-bg-info"><i class="bi bi-universal-access" aria-hidden="true"></i> PMR:
+                        <span data-field="available-accessibility">{{ item.lot.available_accessibility }}</span>/<span data-field="capacity-accessibility">{{ item.lot.capacity_accessibility }}</span></span>
+                </div>
+                {% endif %}
+
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+                    <div>
+                        <small class="text-muted">Espera estimada:</small>
+                        <span class="badge
+                            {% if item.waiting_time.level == 'low' %}bg-success
+                            {% elif item.waiting_time.level == 'medium' %}bg-warning text-dark
+                            {% else %}bg-danger{% endif %}"
+                            data-field="waiting-badge">
+                            {{ item.waiting_time.label }}
+                        </span>
+                    </div>
+                    <div>
+                        <small class="text-muted">
+                            <i class="bi bi-clock-history me-1" aria-hidden="true"></i>Último reporte:
+                            <span class="fw-semibold text-dark" data-field="last-updated">{{ item.lot.last_updated_display }}</span>
+                        </small>
+                    </div>
+                </div>
+
+                <!-- ============================================================
+                     FR26: Display parking capacity
+                     FR27: Parking lot details
+                     Tabla con el desglose por tipo de vehículo, integrada
+                     aquí como sección colapsable (la página aparte
+                     /parking/<slug>/ sigue existiendo para links directos).
+                     ============================================================ -->
+                <div class="mb-2 d-flex gap-2">
+                    <button type="button" class="btn btn-sm btn-outline-info"
+                            data-bs-toggle="collapse" data-bs-target="#info-{{ item.lot.slug }}"
+                            aria-expanded="false" aria-controls="info-{{ item.lot.slug }}">
+                        <i class="bi bi-info-circle" aria-hidden="true"></i> Más información ⌄
+                    </button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary"
+                            data-bs-toggle="modal" data-bs-target="#rulesModal-{{ item.lot.slug }}">
+                        <i class="bi bi-file-earmark-text" aria-hidden="true"></i> Ver Reglas del Parqueadero
+                    </button>
+                </div>
+
+                <!-- Modal Reglamento (FR29) -->
+                <div class="modal fade" id="rulesModal-{{ item.lot.slug }}" tabindex="-1" aria-labelledby="rulesModalLabel-{{ item.lot.slug }}" aria-hidden="true">
+                    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title" id="rulesModalLabel-{{ item.lot.slug }}"><i class="bi bi-file-earmark-text" aria-hidden="true"></i> Reglas - {{ item.lot.name }}</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                            </div>
+                            <div class="modal-body text-start">
+                                <ul class="list-unstyled px-2">
+                                    {% for rule in item.lot.rules.all %}
+                                    <li class="mb-3 text-muted small d-flex align-items-start">
+                                        <i class="bi bi-check2-circle text-primary me-2 fs-6"></i>
+                                        <span style="white-space: pre-wrap;">{{ rule.description }}</span>
+                                    </li>
+                                    {% empty %}
+                                    <li class="text-muted text-center my-4">No hay reglas específicas configuradas para este parqueadero.</li>
+                                    {% endfor %}
+                                </ul>
+                            </div>
+                            <div class="modal-footer d-flex justify-content-between">
+                                <a href="{% url 'general_rules' %}" class="btn btn-outline-primary">Ver Reglamento General Completo</a>
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                    <div class="collapse mt-2" id="info-{{ item.lot.slug }}">
+                        <div class="table-responsive">
+                            <table class="table table-sm table-bordered mb-2 align-middle">
+                                <thead class="table-light">
+                                    <tr>
+                                        <th>Tipo de vehículo</th>
+                                        <th class="text-center">Capacidad</th>
+                                        <th class="text-center">Ocupadas</th>
+                                        <th class="text-center">Disponibles</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td><i class="bi bi-car-front" aria-hidden="true"></i> Carros</td>
+                                        <td class="text-center" data-field="capacity-cars">{{ item.lot.capacity_cars }}</td>
+                                        <td class="text-center" data-field="occupied-cars">{{ item.lot.occupied_cars }}</td>
+                                        <td class="text-center" data-field="available-cars">{{ item.lot.available_cars }}</td>
+                                    </tr>
+                                    <tr>
+                                        <td><i class="pa-ico pa-ico-moto" aria-hidden="true"></i> Motos</td>
+                                        <td class="text-center" data-field="capacity-motorcycles">{{ item.lot.capacity_motorcycles }}</td>
+                                        <td class="text-center" data-field="occupied-motorcycles">{{ item.lot.occupied_motorcycles }}</td>
+                                        <td class="text-center" data-field="available-motorcycles">{{ item.lot.available_motorcycles }}</td>
+                                    </tr>
+                                    <tr>
+                                        <td><i class="bi bi-universal-access" aria-hidden="true"></i> PMR</td>
+                                        <td class="text-center" data-field="capacity-accessibility">{{ item.lot.capacity_accessibility }}</td>
+                                        <td class="text-center" data-field="occupied-accessibility">{{ item.lot.occupied_accessibility }}</td>
+                                        <td class="text-center" data-field="available-accessibility">{{ item.lot.available_accessibility }}</td>
+                                    </tr>
+                                    <tr class="table-light fw-semibold">
+                                        <td>Total</td>
+                                        <td class="text-center" data-field="total">{{ item.lot.total_capacity }}</td>
+                                        <td class="text-center" data-field="occupied">{{ item.lot.occupied_spaces }}</td>
+                                        <td class="text-center" data-field="available">{{ item.lot.available_spaces }}</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+
+                    </div>
+
+                <!-- FR28: aviso de parqueadero lleno -->
+                <div data-field="full-warning">
+                    {% if item.lot.occupancy_status == 'full' %}
+                    <div class="alert alert-danger py-2 px-3 mt-3 text-center fw-bold small" role="alert">
+                        <i class="bi bi-exclamation-triangle" aria-hidden="true"></i> ¡PARQUEADERO LLENO! No hay celdas disponibles.
+                    </div>
+                    {% endif %}
+                </div>
+
+                <!-- ============================================================
+                     FR22 (ocupar) y FR21 (liberar).
+                     Sprint 3: estos formularios se envían por fetch, así que
+                     la página NO se recarga ni salta al comienzo. El atributo
+                     data-ajax-report es el que engancha ese comportamiento;
+                     si el navegador no tuviera JavaScript, el form sigue
+                     funcionando normal (POST + redirect), como antes.
+                     ============================================================ -->
+                <div class="mt-3 pt-3 border-top">
+                    <small class="text-muted d-block mb-2 text-center"><i class="bi bi-arrow-down-circle" aria-hidden="true"></i> Acabo de llegar (Ocupar espacio):</small>
+                    <div class="d-flex gap-2 justify-content-center mb-3">
+                        {% if item.lot.capacity_cars > 0 %}
+                        <form action="{% url 'report_occupied' item.lot.id %}" method="POST" data-ajax-report>
+                            {% csrf_token %}
+                            <input type="hidden" name="vehicle_type" value="car">
+                            <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-car-front" aria-hidden="true"></i> Carro</button>
+                        </form>
+                        {% endif %}
+                        {% if item.lot.capacity_motorcycles > 0 %}
+                        <form action="{% url 'report_occupied' item.lot.id %}" method="POST" data-ajax-report>
+                            {% csrf_token %}
+                            <input type="hidden" name="vehicle_type" value="motorcycle">
+                            <button type="submit" class="btn btn-sm btn-outline-danger"><i class="pa-ico pa-ico-moto" aria-hidden="true"></i> Moto</button>
+                        </form>
+                        {% endif %}
+                        {% if item.lot.capacity_accessibility > 0 %}
+                        <form action="{% url 'report_occupied' item.lot.id %}" method="POST" data-ajax-report>
+                            {% csrf_token %}
+                            <input type="hidden" name="vehicle_type" value="accessibility">
+                            <button type="submit" class="btn btn-sm btn-outline-danger"><i class="bi bi-universal-access" aria-hidden="true"></i> PMR</button>
+                        </form>
+                        {% endif %}
+                    </div>
+
+                    <small class="text-muted d-block mb-2 text-center"><i class="bi bi-box-arrow-right" aria-hidden="true"></i> Me voy (Liberar espacio):</small>
+                    <div class="d-flex gap-2 justify-content-center">
+                        {% if item.lot.capacity_cars > 0 %}
+                        <form action="{% url 'report_available' item.lot.id %}" method="POST" data-ajax-report>
+                            {% csrf_token %}
+                            <input type="hidden" name="vehicle_type" value="car">
+                            <button type="submit" class="btn btn-sm btn-outline-success"><i class="bi bi-car-front" aria-hidden="true"></i> Carro</button>
+                        </form>
+                        {% endif %}
+                        {% if item.lot.capacity_motorcycles > 0 %}
+                        <form action="{% url 'report_available' item.lot.id %}" method="POST" data-ajax-report>
+                            {% csrf_token %}
+                            <input type="hidden" name="vehicle_type" value="motorcycle">
+                            <button type="submit" class="btn btn-sm btn-outline-success"><i class="pa-ico pa-ico-moto" aria-hidden="true"></i> Moto</button>
+                        </form>
+                        {% endif %}
+                        {% if item.lot.capacity_accessibility > 0 %}
+                        <form action="{% url 'report_available' item.lot.id %}" method="POST" data-ajax-report>
+                            {% csrf_token %}
+                            <input type="hidden" name="vehicle_type" value="accessibility">
+                            <button type="submit" class="btn btn-sm btn-outline-success"><i class="bi bi-universal-access" aria-hidden="true"></i> PMR</button>
+                        </form>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- Plano interactivo del parqueadero (Sprint 2) -->
+                {% if item.lot.layout_image %}
+                <div class="mt-3 pt-3 border-top text-center">
+                    <button type="button" class="btn btn-sm btn-primary toggle-plan-btn"
+                            data-bs-toggle="collapse" data-bs-target="#plan-{{ item.lot.slug }}"
+                            aria-expanded="false" aria-controls="plan-{{ item.lot.slug }}">
+                        <i class="bi bi-geo-alt" aria-hidden="true"></i> Ver plano del parqueadero ⌄
+                    </button>
+
+                    <div class="collapse mt-3" id="plan-{{ item.lot.slug }}">
+                        <p class="text-muted small mb-2">Toca un espacio para reportar su estado:</p>
+                        <div class="d-flex gap-3 mb-3 small justify-content-center">
+                            <span><span class="legend-swatch spot-empty"></span> Vacío</span>
+                            <span><span class="legend-swatch spot-occupied"></span> Ocupado</span>
+                            <span><span class="legend-swatch spot-unknown"></span> No se sabe</span>
+                        </div>
+                        <div class="lot-plan-wrap">
+                            <div class="lot-plan-instance" data-lot-slug="{{ item.lot.slug }}">
+                                <img src="{{ item.lot.layout_image.url }}" alt="Plano de {{ item.lot.name }}">
+                                {% for spot in item.spots %}
+                                <button type="button"
+                                        class="spot-marker spot-{{ spot.display_status }}"
+                                        style="left: {{ spot.pos_x|unlocalize }}%; top: {{ spot.pos_y|unlocalize }}%; width: {{ spot.width }}px; height: {{ spot.height }}px; --spot-rotation: {{ spot.rotation }}deg;"
+                                        data-spot-id="{{ spot.id }}"
+                                        data-label="{{ spot.label }}"
+                                        title="{{ spot.label }} — {{ spot.get_status_display }}">
+                                    {{ spot.label }}
+                                </button>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% if not item.spots %}
+                        <p class="text-muted small mt-2 mb-0">Todavía no hay espacios ubicados en este plano.</p>
+                        {% endif %}
+                    </div>
+                </div>
+                {% else %}
+                <div class="mt-3 pt-3 border-top text-muted small text-center">
+                    Este parqueadero todavía no tiene un plano cargado.
+                </div>
+                {% endif %}
+
+                <!-- FR30: Report incorrect parking information -->
+                <div class="mt-3 pt-3 border-top text-center">
+                    <button type="button" class="btn btn-sm btn-outline-warning"
+                            data-bs-toggle="collapse" data-bs-target="#incorrect-{{ item.lot.slug }}"
+                            aria-expanded="false" aria-controls="incorrect-{{ item.lot.slug }}">
+                        <i class="bi bi-flag" aria-hidden="true"></i> Reportar información incorrecta ⌄
+                    </button>
+
+                    <div class="collapse mt-3 text-start" id="incorrect-{{ item.lot.slug }}">
+                        <form method="post" action="{% url 'report_incorrect' item.lot.id %}" data-ajax-report>
+                            {% csrf_token %}
+                            <div class="mb-2">
+                                <label for="vehicle_type_{{ item.lot.id }}" class="form-label small mb-1">Tipo de vehículo</label>
+                                <select class="form-select form-select-sm" id="vehicle_type_{{ item.lot.id }}" name="vehicle_type">
+                                    <option value="general">No especificado</option>
+                                    <option value="car">Carro</option>
+                                    <option value="motorcycle">Moto</option>
+                                    <option value="accessibility">Movilidad reducida</option>
+                                </select>
+                            </div>
+                            <div class="mb-2">
+                                <label for="description_{{ item.lot.id }}" class="form-label small mb-1">¿Qué información es incorrecta?</label>
+                                <textarea class="form-control form-control-sm" id="description_{{ item.lot.id }}"
+                                          name="description" rows="2"
+                                          placeholder="Describe qué está incorrecto..." required></textarea>
+                            </div>
+                            <button type="submit" class="btn btn-sm btn-warning w-100">Enviar reporte</button>
+                        </form>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+        {% endfor %}
+
+        {% else %}
+        <p class="text-muted">
+            Todavía no hay parqueaderos cargados. Se pueden agregar desde /admin/.
+        </p>
+        {% endif %}
+    </div>
+
+    <!-- ================================================================
+         REQUERIMIENTO FR37: transporte alternativo + estado del Metro
+         ================================================================ -->
+    <div class="container mb-5">
+        <h2 class="h4 mb-3">¿El parqueadero está lleno? Considera estas opciones:</h2>
+        <p class="text-muted">
+            Viaja a EAFIT sin preocuparte por el parqueadero. Elige tu servicio de
+            transporte preferido y llega al campus de forma rápida y sencilla.
+        </p>
+        <div class="d-flex flex-wrap justify-content-center gap-2 mb-4">
+            {% for link in transport_links %}
+            <a href="{{ link.url }}" class="btn btn-outline-primary"
+               target="_blank" rel="noopener noreferrer" title="{{ link.description }}">
+                {{ link.icon }} {{ link.name }}
+            </a>
+            {% endfor %}
+        </div>
+
+        <!-- ============================================================
+             Estado del Metro (scraping de metrodemedellin.gov.co).
+
+             Sprint 3: el servidor ya no se queda esperando al sitio del
+             Metro — responde con lo último que tenga guardado y refresca
+             en segundo plano. Aquí abajo el JavaScript consulta ese
+             estado periódicamente y actualiza solo esta sección, sin
+             tocar el resto de la página. Cada bloque muestra su propia
+             antigüedad, y si una sección no se pudo refrescar se
+             conserva la anterior marcada como desactualizada, en vez de
+             quedar vacía.
+             ============================================================ -->
+        <div class="card">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+                    <h3 class="h6 mb-0"><i class="bi bi-train-front" aria-hidden="true"></i> Estado y horarios del Metro de Medellín</h3>
+                    <span class="badge text-bg-light text-muted metro-updated-badge" id="metro-updated-badge">
+                        Cargando...
+                    </span>
+                </div>
+                <p class="text-muted small">
+                    Si el parqueadero está lleno, revisa si el Metro tiene alguna falla antes de salir.
+                    Información tomada de
+                    <a href="https://www.metrodemedellin.gov.co" target="_blank" rel="noopener noreferrer">metrodemedellin.gov.co</a>.
+                </p>
+
+                <div id="metro-error" class="alert alert-warning small py-2 px-3 d-none"></div>
+
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h4 class="h6 mb-1"><i class="bi bi-signpost-split" aria-hidden="true"></i> Estado de las líneas</h4>
+                        <small class="text-muted" data-metro-age="line_status"></small>
+                    </div>
+                    <div id="metro-line-status" class="d-flex flex-wrap gap-2">
+                        <span class="text-muted small">Cargando estado en vivo...</span>
+                    </div>
+                </div>
+
+                <div class="row g-3">
+                    <div class="col-12 col-md-6">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <h4 class="h6 mb-1"><i class="bi bi-newspaper" aria-hidden="true"></i> Noticias / avisos de servicio</h4>
+                            <small class="text-muted" data-metro-age="news"></small>
+                        </div>
+                        <ul class="list-group list-group-flush" id="metro-news-list">
+                            <li class="list-group-item text-muted small">Cargando noticias...</li>
+                        </ul>
+                    </div>
+                    <div class="col-12 col-md-6">
+                        <div class="d-flex justify-content-between align-items-center">
+                            <h4 class="h6 mb-1"><i class="bi bi-clock" aria-hidden="true"></i> Horarios de operación</h4>
+                            <small class="text-muted" data-metro-age="schedules"></small>
+                        </div>
+                        <ul class="list-group list-group-flush" id="metro-schedules-list">
+                            <li class="list-group-item text-muted small">Cargando horarios...</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal compartido para reportar el estado de un espacio del plano -->
+    <div class="modal fade" id="spotModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="spotModalLabel">Espacio</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body d-flex flex-column gap-2">
+                    <p class="text-muted small mb-1">¿Cómo está este espacio ahora mismo?</p>
+                    <button type="button" class="btn btn-success spot-status-btn" data-status="empty"><i class="bi bi-circle-fill text-success" aria-hidden="true"></i> Vacío</button>
+                    <button type="button" class="btn btn-danger spot-status-btn" data-status="occupied"><i class="bi bi-circle-fill text-danger" aria-hidden="true"></i> Ocupado</button>
+                    <button type="button" class="btn btn-secondary spot-status-btn" data-status="unknown"><i class="bi bi-circle" aria-hidden="true"></i> No sé</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <form id="csrf-holder" style="display:none;">{% csrf_token %}</form>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+
+    <!-- Datos iniciales para el mapa y el Metro.
+         Se usa el filtro json_script de Django (y no |safe) porque |safe
+         escribiría el diccionario tal como lo imprime Python —con comillas
+         simples y True/None—, que NO es JSON válido y rompería el
+         JavaScript. json_script lo serializa bien y además lo escapa. -->
+    {{ map_lots|json_script:"map-lots-data" }}
+    {{ metro_status|json_script:"metro-status-data" }}
+
+<script>
+// ════════════════════════════════════════════════════════════════════
+// UTILIDADES COMPARTIDAS
+// ════════════════════════════════════════════════════════════════════
+const CSRF_TOKEN = document.querySelector('#csrf-holder [name=csrfmiddlewaretoken]').value;
+
+const URLS = {
+    lotsState: "{% url 'lots_state_api' %}",
+    search: "{% url 'search_api' %}",
+    metroStatus: "{% url 'metro_status_api' %}",
+    notifications: "{% url 'notifications_api' %}",
+};
+
+/** POST por fetch, con CSRF y marcado como AJAX para que el servidor responda JSON. */
+async function postJSON(url, params) {
+    const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'X-CSRFToken': CSRF_TOKEN,
+            'X-Requested-With': 'XMLHttpRequest',
+            'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams(params || {}).toString(),
+    });
+    return resp.json();
+}
+
+/**
+ * Aviso flotante en la esquina. Reemplaza a los mensajes de Django que
+ * obligaban a recargar la página para verse.
+ */
+function showToast(message, variant = 'success') {
+    const stack = document.getElementById('toast-stack');
+    const el = document.createElement('div');
+    el.className = `alert alert-${variant} alert-dismissible shadow fade show mb-0 py-2 px-3 small`;
+    el.setAttribute('role', 'alert');
+    el.innerHTML = `${message}<button type="button" class="btn-close btn-close-sm" data-bs-dismiss="alert" aria-label="Cerrar"></button>`;
+    stack.appendChild(el);
+    setTimeout(() => {
+        el.classList.remove('show');
+        setTimeout(() => el.remove(), 300);
+    }, 4500);
+}
+
+/** "hace 3 min" a partir de una fecha ISO. */
+function timeAgo(isoString) {
+    if (!isoString) return 'sin datos';
+    const diffMs = Date.now() - new Date(isoString).getTime();
+    const minutes = Math.floor(diffMs / 60000);
+    if (minutes < 1) return 'hace instantes';
+    if (minutes === 1) return 'hace 1 min';
+    if (minutes < 60) return `hace ${minutes} min`;
+    const hours = Math.floor(minutes / 60);
+    if (hours === 1) return 'hace 1 hora';
+    if (hours < 24) return `hace ${hours} horas`;
+    const days = Math.floor(hours / 24);
+    return days === 1 ? 'hace 1 día' : `hace ${days} días`;
+}
+</script>
+
+<script>
+// ════════════════════════════════════════════════════════════════════
+// ACTUALIZACIÓN EN VIVO DE LAS TARJETAS (Sprint 3)
+//
+// Esto es lo que arregla el "me devuelve al comienzo de la página".
+// En vez de recargar, pedimos el estado en JSON y reescribimos solo los
+// números dentro de cada tarjeta. El scroll, los planos abiertos y lo
+// que la persona esté escribiendo se quedan intactos.
+// ════════════════════════════════════════════════════════════════════
+
+const STATUS_BADGE_CLASSES = {
+    available: 'badge bg-success',
+    limited: 'badge bg-warning text-dark',
+    full: 'badge bg-danger',
+};
+const PROGRESS_CLASSES = {
+    available: 'progress-bar bg-success',
+    limited: 'progress-bar bg-warning',
+    full: 'progress-bar bg-danger',
+};
+const WAITING_CLASSES = {
+    low: 'badge bg-success',
+    medium: 'badge bg-warning text-dark',
+    high: 'badge bg-danger',
+};
+
+/** Escribe un valor en TODOS los elementos data-field de una tarjeta. */
+function setFields(card, field, value) {
+    card.querySelectorAll(`[data-field="${field}"]`).forEach((el) => {
+        el.textContent = value;
+    });
+}
+
+/** Repinta una tarjeta con el estado recién traído del servidor. */
+function applyLotState(lot, options = {}) {
+    const card = document.querySelector(`[data-lot-card="${lot.id}"]`);
+    if (!card) return;
+
+    // Datos que usa el filtro (FR12): si el estado cambia en vivo, la
+    // tarjeta entra o sale del filtro sola.
+    card.dataset.status = lot.occupancy_status;
+    card.dataset.availableCar = lot.available_cars;
+    card.dataset.availableMotorcycle = lot.available_motorcycles;
+    card.dataset.availableAccessibility = lot.available_accessibility;
+
+    setFields(card, 'percentage', lot.occupancy_percentage);
+    setFields(card, 'occupied', lot.occupied_spaces);
+    setFields(card, 'available', lot.available_spaces);
+    setFields(card, 'total', lot.total_capacity);
+
+    setFields(card, 'available-cars', lot.available_cars);
+    setFields(card, 'capacity-cars', lot.capacity_cars);
+    setFields(card, 'occupied-cars', lot.occupied_cars);
+    setFields(card, 'available-motorcycles', lot.available_motorcycles);
+    setFields(card, 'capacity-motorcycles', lot.capacity_motorcycles);
+    setFields(card, 'occupied-motorcycles', lot.occupied_motorcycles);
+    setFields(card, 'available-accessibility', lot.available_accessibility);
+    setFields(card, 'capacity-accessibility', lot.capacity_accessibility);
+    setFields(card, 'occupied-accessibility', lot.occupied_accessibility);
+
+    // FR24: Última actualización en tiempo real
+    if (lot.last_updated_display) {
+        setFields(card, 'last-updated', lot.last_updated_display);
+    } else if (lot.last_updated) {
+        const d = new Date(lot.last_updated);
+        if (!isNaN(d.getTime())) {
+            const pad = (n) => String(n).padStart(2, '0');
+            setFields(card, 'last-updated', `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`);
+        }
+    }
+
+    const badge = card.querySelector('[data-field="status-badge"]');
+    if (badge) {
+        badge.className = STATUS_BADGE_CLASSES[lot.occupancy_status] || 'badge bg-secondary';
+        badge.setAttribute('data-field', 'status-badge');
+        badge.textContent = lot.occupancy_status_display;
+    }
+
+    const bar = card.querySelector('[data-field="progress-bar"]');
+    if (bar) {
+        bar.className = PROGRESS_CLASSES[lot.occupancy_status] || 'progress-bar';
+        bar.setAttribute('data-field', 'progress-bar');
+        bar.style.width = `${lot.occupancy_percentage_css}%`;
+    }
+
+    const waiting = card.querySelector('[data-field="waiting-badge"]');
+    if (waiting) {
+        waiting.className = WAITING_CLASSES[lot.waiting_level] || 'badge bg-secondary';
+        waiting.setAttribute('data-field', 'waiting-badge');
+        waiting.textContent = lot.waiting_label;
+    }
+
+    // FR28: aviso de lleno, que aparece/desaparece solo.
+    const fullBox = card.querySelector('[data-field="full-warning"]');
+    if (fullBox) {
+        fullBox.innerHTML = lot.occupancy_status === 'full'
+            ? '<div class="alert alert-danger py-2 px-3 mt-3 text-center fw-bold small" role="alert"><i class="bi bi-exclamation-triangle" aria-hidden="true"></i> ¡PARQUEADERO LLENO! No hay celdas disponibles.</div>'
+            : '';
+    }
+
+    // Avisos del administrador.
+    const noticesBox = card.querySelector('[data-field="notices"]');
+    if (noticesBox) {
+        noticesBox.innerHTML = (lot.notices || [])
+            .map((msg) => `<div class="alert alert-warning py-2 px-3 small mb-2"><i class="bi bi-info-circle" aria-hidden="true"></i> ${msg}</div>`)
+            .join('');
+    }
+
+    card.classList.toggle('border-danger', lot.occupancy_status === 'full');
+    card.classList.toggle('is-favorite', !!lot.is_favorite);
+
+    if (options.highlight) {
+        card.classList.add('just-updated');
+        setTimeout(() => card.classList.remove('just-updated'), 1200);
+    }
+}
+
+/** Trae el estado de todos los parqueaderos y repinta lo que cambió. */
+async function refreshLots({ highlight = false } = {}) {
+    try {
+        const resp = await fetch(URLS.lotsState, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+        const data = await resp.json();
+        if (!data.ok) return;
+
+        data.lots.forEach((lot) => applyLotState(lot, { highlight }));
+        updateMapMarkers(data.lots);
+        updateRecommendation(data.lots);
+        if (typeof applyFilters === 'function') applyFilters();
+
+        const mapBadge = document.getElementById('map-updated-badge');
+        if (mapBadge) mapBadge.textContent = 'Actualizado hace instantes';
+    } catch (e) {
+        // Sin internet momentáneo: dejamos lo que ya se ve en pantalla y
+        // reintentamos en el siguiente ciclo. No molestamos con un error.
+        console.warn('No se pudo refrescar el estado de los parqueaderos', e);
+    }
+}
+
+/** Mantiene al día el banner de recomendación (FR9). */
+function updateRecommendation(lots) {
+    const banner = document.getElementById('recommendation-banner');
+    if (!banner) return;
+
+    const candidates = lots.filter((l) => l.occupancy_status !== 'full');
+    if (candidates.length === 0) {
+        banner.classList.add('d-none');
+        return;
+    }
+    banner.classList.remove('d-none');
+
+    const best = candidates.reduce((a, b) => {
+        const ratioA = a.total_capacity ? a.occupied_spaces / a.total_capacity : 1;
+        const ratioB = b.total_capacity ? b.occupied_spaces / b.total_capacity : 1;
+        return ratioB < ratioA ? b : a;
+    });
+
+    const nameEl = banner.querySelector('[data-rec="name"]');
+    const availEl = banner.querySelector('[data-rec="available"]');
+    const totalEl = banner.querySelector('[data-rec="total"]');
+    if (nameEl) nameEl.textContent = best.name;
+    if (availEl) availEl.textContent = best.available_spaces;
+    if (totalEl) totalEl.textContent = best.total_capacity;
+}
+
+// ── Reportes por fetch: sin recarga, sin perder el scroll ────────────
+document.querySelectorAll('form[data-ajax-report]').forEach((form) => {
+    form.addEventListener('submit', async (event) => {
+        event.preventDefault();  // <- esto es lo que evita la recarga
+
+        if (!(await confirmReport())) {
+            return;
+        }
+
+        const submitBtn = form.querySelector('button[type="submit"]');
+        const originalText = submitBtn ? submitBtn.innerHTML : null;
+        if (submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+        }
+
+        try {
+            const data = await postJSON(form.action, Object.fromEntries(new FormData(form)));
+            if (data.ok) {
+                if (data.lot) applyLotState(data.lot, { highlight: true });
+                showToast(data.message || 'Reporte enviado. ¡Gracias!');
+                form.reset();
+
+                // Si el reporte venía de un panel desplegable (FR30), lo cerramos.
+                const collapse = form.closest('.collapse');
+                if (collapse) {
+                    const instance = bootstrap.Collapse.getInstance(collapse);
+                    if (instance) instance.hide();
+                }
+                // Los contadores de otros parqueaderos también pueden haber
+                // cambiado mientras tanto, así que refrescamos todo.
+                refreshLots();
+            } else {
+                showToast(data.error || 'No se pudo enviar el reporte.', 'danger');
+            }
+        } catch (e) {
+            showToast('No se pudo enviar el reporte. Revisa tu conexión.', 'danger');
+        } finally {
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = originalText;
+            }
+        }
+    });
+});
+
+// ── Favoritos ────────────────────────────────────────────────────────
+document.querySelectorAll('[data-fav-toggle]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+        const lotId = btn.dataset.favToggle;
+        btn.disabled = true;
+        try {
+            const data = await postJSON(`/api/favorites/${lotId}/toggle/`);
+            if (data.ok) {
+                btn.textContent = data.is_favorite ? '★' : '☆';
+                btn.classList.toggle('is-favorite', data.is_favorite);
+                btn.setAttribute('aria-pressed', data.is_favorite ? 'true' : 'false');
+                btn.title = data.is_favorite ? 'Quitar de favoritos' : 'Marcar como favorito';
+
+                const card = document.querySelector(`[data-lot-card="${lotId}"]`);
+                if (card) card.classList.toggle('is-favorite', data.is_favorite);
+
+                showToast(data.message);
+                refreshLots();
+            }
+        } catch (e) {
+            showToast('No se pudo actualizar el favorito.', 'danger');
+        } finally {
+            btn.disabled = false;
+        }
+    });
+});
+
+
+// ── FR14: notificaciones de disponibilidad ─────────────────────────
+document.querySelectorAll('[data-notification-toggle]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+        const lotId = btn.dataset.notificationToggle;
+        btn.disabled = true;
+        try {
+            const data = await postJSON(`/api/notifications/${lotId}/toggle/`);
+            if (data.ok) {
+                btn.setAttribute('aria-pressed', data.enabled ? 'true' : 'false');
+                btn.classList.toggle('btn-warning', data.enabled);
+                btn.classList.toggle('btn-outline-secondary', !data.enabled);
+                btn.innerHTML = data.enabled ? '<i class="bi bi-bell-fill" aria-hidden="true"></i>' : '<i class="bi bi-bell-slash" aria-hidden="true"></i>';
+                btn.title = data.enabled ? 'Desactivar notificaciones' : 'Avisarme cuando haya cupos';
+                showToast(data.message);
+            }
+        } catch (e) {
+            showToast('No se pudo actualizar la notificación.', 'danger');
+        } finally {
+            btn.disabled = false;
+        }
+    });
+});
+
+let shownAvailabilityNotifications = new Set();
+async function refreshParkingNotifications() {
+    const endpoint = URLS.notifications;
+    if (!endpoint) return;
+    try {
+        const resp = await fetch(endpoint, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+        if (resp.status === 401 || resp.status === 403) return;
+        const data = await resp.json();
+        if (!data.ok) return;
+        const current = new Set();
+        (data.notifications || []).forEach((item) => {
+            const key = `${item.lot_id}:${item.available_spaces}`;
+            current.add(key);
+            if (!shownAvailabilityNotifications.has(key)) {
+                showToast(`🔔 ${item.message}`);
+            }
+        });
+        shownAvailabilityNotifications = current;
+    } catch (e) {
+        // Las notificaciones son auxiliares: un fallo aquí no interrumpe el home.
+    }
+}
+
+refreshParkingNotifications();
+setInterval(refreshParkingNotifications, 30 * 1000);
+
+// Refresco periódico del estado de los parqueaderos.
+setInterval(() => refreshLots(), 30 * 1000);
+</script>
+
+<script>
+// ════════════════════════════════════════════════════════════════════
+// MAPA (FR8) — Sprint 3
+//
+// Los marcadores salen de la base de datos (ParkingLot.latitude /
+// longitude), no de coordenadas escritas a mano en el HTML. Cada uno
+// muestra los cupos libres y se pinta del color del estado, y se
+// actualiza junto con el resto de la página.
+// ════════════════════════════════════════════════════════════════════
+let parkingMap = null;
+const mapMarkers = {};   // lot.id -> marcador de Leaflet
+
+function pinIcon(lot) {
+    const statusClass = `map-pin-${lot.occupancy_status}`;
+    const favClass = lot.is_favorite ? 'map-pin-favorite' : '';
+    const label = lot.occupancy_status === 'full' ? 'LLENO' : lot.available_spaces;
+    return L.divIcon({
+        className: '',   // sin clase por defecto de Leaflet
+        html: `<div class="map-pin ${statusClass} ${favClass}" style="position:relative">${label}</div>`,
+        iconSize: [42, 42],
+        iconAnchor: [21, 21],
+        popupAnchor: [0, -22],
+    });
+}
+
+function popupHtml(lot) {
+    const statusColor = {
+        available: 'success', limited: 'warning', full: 'danger',
+    }[lot.occupancy_status] || 'secondary';
+
+    return `
+        <div style="min-width: 190px">
+            <div class="fw-bold mb-1">${lot.is_favorite ? '★ ' : ''}${lot.name}</div>
+            <span class="badge bg-${statusColor} mb-2">${lot.occupancy_status_display}</span>
+            <div class="small mb-1">
+                <strong>${lot.available_spaces}</strong> de ${lot.total_capacity} celdas libres
+            </div>
+            <div class="small text-muted mb-2">
+                <i class="bi bi-car-front"></i> ${lot.available_cars} &nbsp; <i class="pa-ico pa-ico-moto"></i> ${lot.available_motorcycles} &nbsp; <i class="bi bi-universal-access"></i> ${lot.available_accessibility}
+            </div>
+            <div class="small mb-2"><i class="bi bi-stopwatch"></i> ${lot.waiting_label}</div>
+            <a href="#lot-card-${lot.slug}" class="btn btn-sm btn-primary w-100">Ver detalle</a>
+        </div>
+    `;
+}
+
+function initMap(lots) {
+    const container = document.getElementById('parking-map');
+    if (!container || typeof L === 'undefined') return;
+
+    parkingMap = L.map('parking-map', { scrollWheelZoom: false });
+
+    // Capa base más limpia y clara que la de OpenStreetMap por defecto:
+    // se distinguen mucho mejor los marcadores de colores encima.
+    L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+        maxZoom: 20,
+        attribution: 'Tiles &copy; Esri',
+    }).addTo(parkingMap);
+
+    if (lots.length === 0) {
+        parkingMap.setView([6.2002, -75.5780], 16);   // campus, por defecto
+    } else {
+        lots.forEach((lot) => {
+            const marker = L.marker([lot.latitude, lot.longitude], { icon: pinIcon(lot) })
+                .addTo(parkingMap)
+                .bindPopup(popupHtml(lot));
+            mapMarkers[lot.id] = marker;
+        });
+        // Encuadra automáticamente todos los parqueaderos, en vez de
+        // depender de un centro y zoom fijos escritos a mano.
+        parkingMap.fitBounds(
+            L.latLngBounds(lots.map((l) => [l.latitude, l.longitude])),
+            { padding: [55, 55], maxZoom: 17 }
+        );
+    }
+
+    // Leyenda de colores.
+    const legend = L.control({ position: 'bottomright' });
+    legend.onAdd = () => {
+        const div = L.DomUtil.create('div', 'map-legend');
+        div.innerHTML = `
+            <div><span class="dot" style="background:#2f7d5b"></span>Disponible</div>
+            <div><span class="dot" style="background:#c98a2b"></span>Limitado</div>
+            <div><span class="dot" style="background:#b5423f"></span>Lleno</div>
+        `;
+        return div;
+    };
+    legend.addTo(parkingMap);
+
+    // El mapa se dibuja dentro de un contenedor que puede cambiar de
+    // tamaño; sin esto a veces queda a medias al cargar.
+    setTimeout(() => parkingMap.invalidateSize(), 250);
+    window.addEventListener('resize', () => parkingMap.invalidateSize());
+}
+
+/** Actualiza los marcadores sin volver a construir el mapa. */
+function updateMapMarkers(lots) {
+    if (!parkingMap) return;
+    lots.forEach((lot) => {
+        const marker = mapMarkers[lot.id];
+        if (!marker || lot.latitude === null || lot.longitude === null) return;
+        marker.setIcon(pinIcon(lot));
+        marker.setPopupContent(popupHtml(lot));
+    });
+}
+
+// Al hacer clic en "Ver detalle" del popup, llevamos a la tarjeta con un
+// desplazamiento suave (y no de un salto brusco).
+document.addEventListener('click', (event) => {
+    const link = event.target.closest('a[href^="#lot-card-"]');
+    if (!link) return;
+    event.preventDefault();
+    const target = document.querySelector(link.getAttribute('href'));
+    if (target) {
+        if (typeof ensureCardVisible === 'function') ensureCardVisible(target);
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        target.classList.add('just-updated');
+        setTimeout(() => target.classList.remove('just-updated'), 1400);
+    }
+});
+
+// Arranque del mapa con los datos que vinieron ya renderizados.
+(function () {
+    let initialLots = [];
+    try {
+        initialLots = JSON.parse(document.getElementById('map-lots-data').textContent || '[]');
+    } catch (e) {
+        initialLots = [];
+    }
+    initMap(initialLots.filter((l) => l.latitude !== null && l.longitude !== null));
+})();
+</script>
+
+<script>
+// ════════════════════════════════════════════════════════════════════
+// FILTROS (FR12) — estado + "con cupo para" tipo de vehículo
+//
+// Mismas reglas que core/filters.py (lot_matches). El servidor ya
+// entregó la página filtrada según la URL; aquí se cambia de filtro al
+// instante sin recargar, se actualizan los números de cada botón, se
+// atenúan en el mapa los parqueaderos que no pasan el filtro y la URL
+// queda con los filtros (se puede compartir o recargar sin perderlos).
+// ════════════════════════════════════════════════════════════════════
+const filterBar = document.getElementById('filter-bar');
+const filterState = {
+    estado: filterBar ? filterBar.dataset.initialEstado : '',
+    vehiculo: filterBar ? filterBar.dataset.initialVehiculo : '',
+};
+const AVAILABLE_KEY_BY_VEHICLE = {
+    car: 'availableCar',
+    motorcycle: 'availableMotorcycle',
+    accessibility: 'availableAccessibility',
+};
+
+function cardMatchesFilters(card) {
+    if (filterState.estado && card.dataset.status !== filterState.estado) return false;
+    if (filterState.vehiculo) {
+        const key = AVAILABLE_KEY_BY_VEHICLE[filterState.vehiculo];
+        if (!(Number(card.dataset[key]) > 0)) return false;
+    }
+    return true;
+}
+
+function filtersUrl() {
+    const params = new URLSearchParams(window.location.search);
+    ['estado', 'vehiculo'].forEach((key) => {
+        if (filterState[key]) params.set(key, filterState[key]);
+        else params.delete(key);
+    });
+    const query = params.toString();
+    return `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`;
+}
+
+function applyFilters({ updateUrl = false } = {}) {
+    if (!filterBar) return;
+
+    const cards = document.querySelectorAll('[data-lot-card]');
+    const counts = { all: cards.length, available: 0, limited: 0, full: 0 };
+    let visible = 0;
+
+    cards.forEach((card) => {
+        if (card.dataset.status in counts) counts[card.dataset.status] += 1;
+        const matches = cardMatchesFilters(card);
+        card.classList.toggle('filtered-out', !matches);
+        if (matches) visible += 1;
+
+        // En el mapa no se esconde: se atenúa, para no perder la referencia.
+        const marker = typeof mapMarkers !== 'undefined' ? mapMarkers[card.dataset.lotCard] : null;
+        if (marker) marker.setOpacity(matches ? 1 : 0.3);
+    });
+
+    document.querySelectorAll('[data-status-count]').forEach((el) => {
+        el.textContent = counts[el.dataset.statusCount] ?? 0;
+    });
+
+    document.querySelectorAll('.filter-chip').forEach((chip) => {
+        const active = filterState[chip.dataset.filterGroup] === chip.dataset.filterValue;
+        chip.classList.toggle('active', active);
+        chip.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+
+    document.getElementById('filter-visible-count').textContent = visible;
+    document.getElementById('filter-empty').classList.toggle('d-none', visible > 0);
+    document.getElementById('filter-clear').classList.toggle(
+        'd-none', !filterState.estado && !filterState.vehiculo
+    );
+
+    if (updateUrl) history.replaceState(null, '', filtersUrl());
+}
+
+function resetFilters() {
+    filterState.estado = '';
+    filterState.vehiculo = '';
+    applyFilters({ updateUrl: true });
+}
+
+/**
+ * Si alguien va a una tarjeta que el filtro tiene oculta (desde el
+ * buscador o el mapa), quitamos los filtros para poder mostrársela.
+ */
+function ensureCardVisible(card) {
+    if (card && card.classList.contains('filtered-out')) {
+        resetFilters();
+        showToast('Quitamos los filtros para mostrarte ese parqueadero.', 'info');
+    }
+}
+
+document.querySelectorAll('.filter-chip').forEach((chip) => {
+    chip.addEventListener('click', (event) => {
+        event.preventDefault();   // sin recargar: filtramos aquí mismo
+        const group = chip.dataset.filterGroup;
+        const value = chip.dataset.filterValue;
+        // Tocar un filtro que ya está activo lo quita (vuelve a "Todos").
+        filterState[group] = filterState[group] === value ? '' : value;
+        applyFilters({ updateUrl: true });
+    });
+});
+
+document.querySelectorAll('#filter-clear, [data-filter-reset]').forEach((el) => {
+    el.addEventListener('click', (event) => {
+        event.preventDefault();
+        resetFilters();
+    });
+});
+
+// Sincroniza el mapa y los contadores con el filtro que vino en la URL.
+applyFilters();
+</script>
+
+<script>
+// ════════════════════════════════════════════════════════════════════
+// BUSCADOR INTELIGENTE (Sprint 3)
+// ════════════════════════════════════════════════════════════════════
+const searchInput = document.getElementById('search-input');
+const searchResults = document.getElementById('search-results');
+const searchClear = document.getElementById('search-clear');
+let searchTimer = null;
+
+function hideSearchResults() {
+    searchResults.classList.add('d-none');
+    searchResults.innerHTML = '';
+}
+
+function renderSearchResults(results) {
+    if (!results.length) {
+        searchResults.innerHTML = `
+            <div class="list-group-item text-muted small">
+                No encontramos un parqueadero con eso. Prueba con "sur", "norte",
+                "guayabos", "empleados" o "el más desocupado".
+            </div>`;
+        searchResults.classList.remove('d-none');
+        return;
+    }
+
+    searchResults.innerHTML = results.map((lot, index) => {
+        const color = {
+            available: 'success', limited: 'warning', full: 'danger',
+        }[lot.occupancy_status] || 'secondary';
+
+        return `
+            <button type="button" class="list-group-item list-group-item-action"
+                    data-goto-lot="${lot.slug}">
+                <div class="d-flex justify-content-between align-items-center gap-2">
+                    <div>
+                        <span class="fw-semibold">${lot.is_favorite ? '★ ' : ''}${lot.name}</span>
+                        ${index === 0 ? '<span class="badge text-bg-primary ms-1">Mejor opción</span>' : ''}
+                        <div class="small text-muted">${lot.reason}</div>
+                    </div>
+                    <span class="badge bg-${color}">${lot.occupancy_status_display}</span>
+                </div>
+            </button>`;
+    }).join('');
+    searchResults.classList.remove('d-none');
+}
+
+async function runSearch(query) {
+    if (!query.trim()) {
+        hideSearchResults();
+        return;
+    }
+    try {
+        const resp = await fetch(`${URLS.search}?q=${encodeURIComponent(query)}`,
+                                 { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+        const data = await resp.json();
+        renderSearchResults(data.results || []);
+    } catch (e) {
+        hideSearchResults();
+    }
+}
+
+if (searchInput) {
+    searchInput.addEventListener('input', () => {
+        const value = searchInput.value;
+        searchClear.classList.toggle('d-none', !value);
+        // Pequeña espera: así no lanzamos una consulta por cada tecla.
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => runSearch(value), 220);
+    });
+
+    searchInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+            hideSearchResults();
+            searchInput.blur();
+        }
+    });
+
+    searchClear.addEventListener('click', () => {
+        searchInput.value = '';
+        searchClear.classList.add('d-none');
+        hideSearchResults();
+        searchInput.focus();
+    });
+
+    // Al elegir un resultado, llevamos a su tarjeta y la resaltamos.
+    searchResults.addEventListener('click', (event) => {
+        const btn = event.target.closest('[data-goto-lot]');
+        if (!btn) return;
+        const card = document.getElementById(`lot-card-${btn.dataset.gotoLot}`);
+        hideSearchResults();
+        if (card) {
+            if (typeof ensureCardVisible === 'function') ensureCardVisible(card);
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            card.classList.add('just-updated');
+            setTimeout(() => card.classList.remove('just-updated'), 1600);
+        }
+    });
+
+    // Cerrar los resultados al hacer clic fuera.
+    document.addEventListener('click', (event) => {
+        if (!searchResults.contains(event.target) && event.target !== searchInput) {
+            hideSearchResults();
+        }
+    });
+}
+</script>
+
+<script>
+// ════════════════════════════════════════════════════════════════════
+// PLANO INTERACTIVO POR ESPACIO (Sprint 2)
+// ════════════════════════════════════════════════════════════════════
+let currentSpotId = null;
+let currentLotSlug = null;
+const spotModal = new bootstrap.Modal(document.getElementById('spotModal'));
+
+document.querySelectorAll('.spot-marker[data-spot-id]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+        currentSpotId = btn.dataset.spotId;
+        currentLotSlug = btn.closest('.lot-plan-instance').dataset.lotSlug;
+        document.getElementById('spotModalLabel').textContent = `Espacio ${btn.dataset.label}`;
+        spotModal.show();
+    });
+});
+
+document.querySelectorAll('.spot-status-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+        if (!currentSpotId || !currentLotSlug) return;
+        try {
+            const data = await postJSON(
+                `/parking/${currentLotSlug}/spots/${currentSpotId}/status/`,
+                { status: btn.dataset.status }
+            );
+            if (data.ok) {
+                const marker = document.querySelector(
+                    `.lot-plan-instance[data-lot-slug="${currentLotSlug}"] .spot-marker[data-spot-id="${data.spot_id}"]`
+                );
+                if (marker) {
+                    marker.classList.remove('spot-empty', 'spot-occupied', 'spot-unknown');
+                    marker.classList.add(`spot-${data.status}`);
+                    marker.title = `${marker.dataset.label} — ${data.status_display}`;
+                }
+                showToast('Estado del espacio actualizado. ¡Gracias!');
+            }
+        } catch (e) {
+            showToast('No se pudo actualizar el espacio.', 'danger');
+        } finally {
+            spotModal.hide();
+        }
+    });
+});
+
+// Texto del botón que abre/cierra cada plano.
+document.querySelectorAll('.toggle-plan-btn').forEach((btn) => {
+    const target = document.querySelector(btn.getAttribute('data-bs-target'));
+    if (!target) return;
+    target.addEventListener('shown.bs.collapse', () => { btn.innerHTML = '<i class="bi bi-geo-alt" aria-hidden="true"></i> Ocultar plano ⌃'; });
+    target.addEventListener('hidden.bs.collapse', () => { btn.innerHTML = '<i class="bi bi-geo-alt" aria-hidden="true"></i> Ver plano del parqueadero ⌄'; });
+});
+</script>
+
+<script>
+// ════════════════════════════════════════════════════════════════════
+// ESTADO DEL METRO (Sprint 3)
+//
+// El servidor responde de inmediato con lo último que tenga guardado y
+// refresca en segundo plano, así que esta consulta nunca se queda
+// colgada. Cada sección muestra su propia antigüedad; si alguna no se
+// pudo refrescar, se conserva la anterior marcada como desactualizada
+// en vez de quedar vacía.
+// ════════════════════════════════════════════════════════════════════
+let metroState = null;
+
+function renderMetroAges() {
+    if (!metroState) return;
+
+    const badge = document.getElementById('metro-updated-badge');
+    if (metroState.refreshing) {
+        badge.innerHTML = '<span class="spinner-border spinner-border-sm me-1" style="width:.7rem;height:.7rem"></span>Actualizando...';
+    } else {
+        badge.textContent = `Actualizado ${timeAgo(metroState.last_attempt_at)}`;
+    }
+
+    // Antigüedad por sección: así se ve claro si el semáforo es de hace
+    // 2 minutos pero los horarios son de hace una hora.
+    document.querySelectorAll('[data-metro-age]').forEach((el) => {
+        const section = el.dataset.metroAge;
+        const fetchedAt = metroState[`${section}_fetched_at`];
+        el.textContent = fetchedAt ? timeAgo(fetchedAt) : '';
+
+        const block = el.closest('.mb-3, .col-12');
+        if (block) {
+            // Marcamos como "viejo" lo que lleve más de 20 minutos sin
+            // refrescarse con éxito.
+            const stale = fetchedAt && (Date.now() - new Date(fetchedAt).getTime()) > 20 * 60 * 1000;
+            block.classList.toggle('metro-stale', !!stale);
+        }
+    });
+}
+
+function renderMetroLineStatus(lineStatus) {
+    const el = document.getElementById('metro-line-status');
+    if (!lineStatus || lineStatus.length === 0) {
+        el.innerHTML = `
+            <span class="text-muted small">
+                Estado en vivo no disponible por ahora. Revisa las noticias aquí abajo.
+            </span>`;
+        return;
+    }
+    el.innerHTML = lineStatus.map((item) => {
+        const status = (item.status || '').toLowerCase();
+        let cls = 'text-bg-secondary';
+        if (status.includes('normal')) cls = 'text-bg-success';
+        else if (status.includes('restring')) cls = 'text-bg-warning text-dark';
+        else if (status.includes('sin operaci')) cls = 'text-bg-danger';
+        const route = item.route ? ` — ${item.route}` : '';
+        const lamp = status.includes('normal') ? '🟢' : status.includes('restring') ? '🟡' : status.includes('sin operaci') ? '🔴' : '⚪';
+        return `<span class="metro-signal ${cls}" title="${item.line}${route}"><span class="metro-signal-light" aria-hidden="true">${lamp}</span><span class="metro-signal-copy"><strong>${item.line}</strong><span>${item.status}</span></span></span>`;
+    }).join('');
+}
+
+function renderMetroNews(newsList) {
+    const el = document.getElementById('metro-news-list');
+    if (!newsList || newsList.length === 0) {
+        el.innerHTML = '<li class="list-group-item text-muted small">No hay noticias recientes.</li>';
+        return;
+    }
+    el.innerHTML = newsList.map((item) => `
+        <li class="list-group-item small">
+            <a href="${item.url}" target="_blank" rel="noopener noreferrer">${item.title}</a>
+        </li>`).join('');
+}
+
+function renderMetroSchedules(schedules) {
+    const el = document.getElementById('metro-schedules-list');
+    if (!schedules || schedules.length === 0) {
+        el.innerHTML = '<li class="list-group-item text-muted small">No se encontraron horarios.</li>';
+        return;
+    }
+    el.innerHTML = schedules.map((s) => {
+        const parts = [];
+        if (s.category) parts.push(`<span class="text-muted">${s.category}</span>`);
+        if (s.day_type) parts.push(`<strong>${s.day_type}</strong>`);
+        if (s.lines) parts.push(`<span class="badge text-bg-light text-dark border">${s.lines}</span>`);
+        const header = parts.length ? `<div class="mb-1">${parts.join(' · ')}</div>` : '';
+        return `<li class="list-group-item small">${header}<div>${s.hours}</div></li>`;
+    }).join('');
+}
+
+async function refreshMetroStatus() {
+    try {
+        const resp = await fetch(URLS.metroStatus, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+        metroState = await resp.json();
+
+        const errorBox = document.getElementById('metro-error');
+        if (!metroState.ok && metroState.error) {
+            errorBox.textContent = `⚠️ ${metroState.error}`;
+            errorBox.classList.remove('d-none');
+        } else {
+            errorBox.classList.add('d-none');
+        }
+
+        renderMetroLineStatus(metroState.line_status);
+        renderMetroNews(metroState.news);
+        renderMetroSchedules(metroState.schedules);
+        renderMetroAges();
+
+        // Si el servidor dijo que está refrescando en segundo plano,
+        // volvemos a preguntar pronto para mostrar el resultado apenas
+        // esté listo, en vez de esperar los 5 minutos completos.
+        if (metroState.refreshing) {
+            setTimeout(refreshMetroStatus, 12 * 1000);
+        }
+    } catch (e) {
+        // Se conserva lo que ya está en pantalla; solo dejamos de
+        // actualizar el "hace X" hasta la próxima respuesta buena.
+        console.warn('No se pudo consultar el estado del Metro', e);
+    }
+}
+
+// Estado inicial ya renderizado por el servidor (evita que la sección
+// arranque vacía mientras llega la primera consulta).
+(function () {
+    try {
+        metroState = JSON.parse(document.getElementById('metro-status-data').textContent);
+        renderMetroLineStatus(metroState.line_status);
+        renderMetroNews(metroState.news);
+        renderMetroSchedules(metroState.schedules);
+        renderMetroAges();
+        if (metroState.refreshing) setTimeout(refreshMetroStatus, 8 * 1000);
+    } catch (e) {
+        refreshMetroStatus();
+    }
+})();
+
+setInterval(refreshMetroStatus, 5 * 60 * 1000);
+// El "hace X minutos" se recalcula solo, sin pedir nada al servidor: por
+// eso ahora sí cambia siempre, aunque el scraping esté fallando.
+setInterval(renderMetroAges, 20 * 1000);
+</script>
+
+    {% include 'core/_confirm_modal.html' %}
+</body>
+</html>

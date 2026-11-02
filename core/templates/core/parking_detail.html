@@ -1,0 +1,319 @@
+{% load static %}
+{% load l10n %}
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ lot.name }} · Parqueando Ando</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+    <style>
+        #lot-plan {
+            position: relative;
+            width: 100%;
+            max-width: 900px;
+            margin: 0 auto;
+            user-select: none;
+        }
+        #lot-plan img {
+            width: 100%;
+            display: block;
+            border-radius: 12px;
+        }
+        /* Casilla tipo "parqueadero": rectángulo con líneas punteadas azul
+           clarito, más oscuro al pasar el cursor. Mismo estilo que en el
+           home y el mapeador visual. */
+        .spot-marker {
+            position: absolute;
+            transform: translate(-50%, -50%) rotate(var(--spot-rotation, 0deg));
+            border-radius: 3px;
+            border: 2px dashed #d9bf9f;
+            font-size: 0.62rem;
+            font-weight: 700;
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            padding: 0;
+            line-height: 1;
+            transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+        }
+        .spot-marker:hover {
+            border-color: #0f2747;
+            transform: translate(-50%, -50%) rotate(var(--spot-rotation, 0deg)) scale(1.12);
+            box-shadow: 0 0 0 3px rgba(10, 88, 202, 0.25);
+            z-index: 5;
+        }
+        .spot-empty    { background-color: #198754; }  /* verde  */
+        .spot-occupied { background-color: #dc3545; }  /* rojo   */
+        .spot-unknown  { background-color: #6c757d; }  /* gris   */
+
+        .legend-swatch {
+            display: inline-block;
+            width: 16px; height: 16px;
+            border-radius: 3px;
+            border: 2px dashed #d9bf9f;
+            vertical-align: middle;
+        }
+    </style>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Roboto+Condensed:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{% static 'core/css/theme.css' %}">
+    <link rel="icon" type="image/svg+xml" href="{% static 'core/img/favicon.svg' %}">
+</head>
+
+<body class="bg-light">
+    <div class="container mt-3">
+        {% if messages %}
+            {% for message in messages %}
+                <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                </div>
+            {% endfor %}
+        {% endif %}
+    </div>
+
+    <div class="container py-4">
+        <a href="{% url 'home' %}" class="btn btn-sm btn-outline-secondary mb-3">&larr; Volver a todos los parqueaderos</a>
+
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-1">
+            <h1 class="h3 mb-0">{{ lot.name }}</h1>
+            <div class="d-flex align-items-center gap-2">
+                {% if lot.rules.exists %}
+                <button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#rulesModal">
+                    <i class="bi bi-file-earmark-text" aria-hidden="true"></i> Ver Reglas del Parqueadero
+                </button>
+                {% endif %}
+                <span class="badge fs-6
+                    {% if lot.occupancy_status == 'available' %}bg-success
+                    {% elif lot.occupancy_status == 'limited' %}bg-warning text-dark
+                    {% else %}bg-danger{% endif %}">
+                    {{ lot.occupancy_status_display }}
+                </span>
+            </div>
+        </div>
+        <div class="card bg-white border-0 shadow-sm p-3 mb-4">
+            <div class="d-flex align-items-center justify-content-between flex-wrap gap-3">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="bi bi-hourglass-split text-primary fs-5" aria-hidden="true"></i>
+                    <div>
+                        <small class="text-muted d-block lh-1">Espera estimada</small>
+                        <span class="fw-semibold fs-6 text-dark">{{ waiting_time.label }}</span>
+                    </div>
+                </div>
+                <div class="d-flex align-items-center gap-2">
+                    <i class="bi bi-clock-history text-secondary fs-5" aria-hidden="true"></i>
+                    <div>
+                        <small class="text-muted d-block lh-1">Último reporte:</small>
+                        <span class="fw-semibold fs-6 text-dark" data-field="last-updated">{{ lot.last_updated_display }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal Reglamento (FR29) -->
+        {% if lot.rules.exists %}
+        <div class="modal fade" id="rulesModal" tabindex="-1" aria-labelledby="rulesModalLabel" aria-hidden="true">
+            <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title" id="rulesModalLabel"><i class="bi bi-file-earmark-text" aria-hidden="true"></i> Reglas - {{ lot.name }}</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body text-start">
+                        <ul class="list-unstyled px-2">
+                            {% for rule in lot.rules.all %}
+                            <li class="mb-3 text-muted small d-flex align-items-start">
+                                <i class="bi bi-check2-circle text-primary me-2 fs-6"></i>
+                                <span style="white-space: pre-wrap;">{{ rule.description }}</span>
+                            </li>
+                            {% empty %}
+                            <li class="text-muted text-center my-4">No hay reglas específicas configuradas para este parqueadero.</li>
+                            {% endfor %}
+                        </ul>
+                    </div>
+                    <div class="modal-footer d-flex justify-content-between">
+                        <a href="{% url 'general_rules' %}" class="btn btn-outline-primary">Ver Reglamento General Completo</a>
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cerrar</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Avisos administrativos (ParkingLotNotice) — ver core/models.py -->
+        {% for notice in lot.active_notices %}
+        <div class="alert alert-warning py-2 px-3 small">
+            <i class="bi bi-info-circle" aria-hidden="true"></i> {{ notice.message }}
+        </div>
+        {% endfor %}
+
+        <!-- ================================================================
+             FR26: Display parking capacity
+             Desglose de capacidad y disponibilidad por tipo de vehículo.
+             ================================================================ -->
+        <div class="row g-3 mb-4">
+            <div class="col-6 col-md-3">
+                <div class="card text-center h-100">
+                    <div class="card-body py-3">
+                        <div class="small text-muted">Capacidad total</div>
+                        <div class="h4 mb-0">{{ lot.total_capacity }}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="card text-center h-100">
+                    <div class="card-body py-3">
+                        <div class="small text-muted"><i class="bi bi-car-front" aria-hidden="true"></i> Carros</div>
+                        <div class="h5 mb-0">{{ lot.available_cars }}/{{ lot.capacity_cars }}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="card text-center h-100">
+                    <div class="card-body py-3">
+                        <div class="small text-muted"><i class="pa-ico pa-ico-moto" aria-hidden="true"></i> Motos</div>
+                        <div class="h5 mb-0">{{ lot.available_motorcycles }}/{{ lot.capacity_motorcycles }}</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-6 col-md-3">
+                <div class="card text-center h-100">
+                    <div class="card-body py-3">
+                        <div class="small text-muted"><i class="bi bi-universal-access" aria-hidden="true"></i> PMR</div>
+                        <div class="h5 mb-0">{{ lot.available_accessibility }}/{{ lot.capacity_accessibility }}</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {% if lot.occupancy_status == 'full' %}
+        <div class="alert alert-danger text-center fw-bold"><i class="bi bi-exclamation-triangle" aria-hidden="true"></i> ¡PARQUEADERO LLENO! No hay celdas disponibles.</div>
+        {% endif %}
+
+        <!-- ================================================================
+             Plano interactivo por espacio (Sprint 2).
+             Cada casilla es un ParkingSpot ubicado en (pos_x, pos_y) % sobre
+             la imagen del plano. Al tocarla, el usuario reporta si está
+             ocupado, vacío o si no sabe — actualiza sin recargar la página.
+             ================================================================ -->
+        <h2 class="h5 mb-2">Plano del parqueadero</h2>
+        <p class="text-muted small">Toca un espacio para reportar su estado.</p>
+
+        <div class="d-flex gap-3 mb-3 small">
+            <span><span class="legend-swatch spot-empty"></span> Vacío</span>
+            <span><span class="legend-swatch spot-occupied"></span> Ocupado</span>
+            <span><span class="legend-swatch spot-unknown"></span> No se sabe</span>
+        </div>
+
+        <div id="lot-plan" class="mb-5">
+            {% if lot.layout_image %}
+                <img src="{{ lot.layout_image.url }}" alt="Plano de {{ lot.name }}">
+            {% else %}
+                <div class="bg-white border rounded p-5 text-center text-muted">
+                    Este parqueadero todavía no tiene el plano cargado.<br>
+                    Un administrador puede subirlo desde el panel de administración.
+                </div>
+            {% endif %}
+
+            {% for spot in spots %}
+            <button type="button"
+                    class="spot-marker spot-{{ spot.display_status }}"
+                    style="left: {{ spot.pos_x|unlocalize }}%; top: {{ spot.pos_y|unlocalize }}%; width: {{ spot.width }}px; height: {{ spot.height }}px; --spot-rotation: {{ spot.rotation }}deg;"
+                    data-spot-id="{{ spot.id }}"
+                    data-label="{{ spot.label }}"
+                    title="{{ spot.label }} — {{ spot.get_status_display }}">
+                {{ spot.label }}
+            </button>
+            {% endfor %}
+        </div>
+
+        {% if not spots %}
+        <p class="text-muted">Todavía no hay espacios cargados en el plano de este parqueadero.</p>
+        {% endif %}
+    </div>
+
+    <!-- Modal para reportar el estado de un espacio -->
+    <div class="modal fade" id="spotModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="spotModalLabel">Espacio</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body d-flex flex-column gap-2">
+                    <p class="text-muted small mb-1">¿Cómo está este espacio ahora mismo?</p>
+                    <button type="button" class="btn btn-success spot-status-btn" data-status="empty"><i class="bi bi-circle-fill text-success" aria-hidden="true"></i> Vacío</button>
+                    <button type="button" class="btn btn-danger spot-status-btn" data-status="occupied"><i class="bi bi-circle-fill text-danger" aria-hidden="true"></i> Ocupado</button>
+                    <button type="button" class="btn btn-secondary spot-status-btn" data-status="unknown"><i class="bi bi-circle" aria-hidden="true"></i> No sé</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <form id="csrf-holder" style="display:none;">{% csrf_token %}</form>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const csrftoken = document.querySelector('#csrf-holder [name=csrfmiddlewaretoken]').value;
+        const lotSlug = "{{ lot.slug }}";
+        let currentSpotId = null;
+        const spotModalEl = document.getElementById('spotModal');
+        const spotModal = new bootstrap.Modal(spotModalEl);
+
+        document.querySelectorAll('.spot-marker[data-spot-id]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                currentSpotId = btn.dataset.spotId;
+                document.getElementById('spotModalLabel').textContent = `Espacio ${btn.dataset.label}`;
+                spotModal.show();
+            });
+        });
+
+        document.querySelectorAll('.spot-status-btn').forEach((btn) => {
+            btn.addEventListener('click', async () => {
+                if (!currentSpotId) return;
+
+                if (!(await confirmReport())) {
+                    return;
+                }
+
+                const status = btn.dataset.status;
+                try {
+                    const resp = await fetch(`/parking/${lotSlug}/spots/${currentSpotId}/status/`, {
+                        method: 'POST',
+                        headers: {
+                            'X-CSRFToken': csrftoken,
+                            'X-Requested-With': 'XMLHttpRequest',
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                        },
+                        body: `status=${status}`,
+                    });
+                    const data = await resp.json();
+                    if (data.ok) {
+                        const marker = document.querySelector(`.spot-marker[data-spot-id="${data.spot_id}"]`);
+                        marker.classList.remove('spot-empty', 'spot-occupied', 'spot-unknown');
+                        marker.classList.add(`spot-${data.status}`);
+                        marker.title = `${marker.dataset.label} — ${data.status_display}`;
+                        const lu = document.querySelector('[data-field="last-updated"]');
+                        if (lu) {
+                            const now = new Date();
+                            const pad = (n) => String(n).padStart(2, '0');
+                            lu.textContent = `${pad(now.getDate())}/${pad(now.getMonth() + 1)}/${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}`;
+                        }
+                    } else {
+                        alert(data.error || "No se pudo actualizar el espacio.");
+                    }
+                } catch (e) {
+                    alert('No se pudo actualizar el espacio. Revisa tu conexión.');
+                } finally {
+                    spotModal.hide();
+                }
+            });
+        });
+    </script>
+    {% include 'core/_confirm_modal.html' %}
+</body>
+</html>

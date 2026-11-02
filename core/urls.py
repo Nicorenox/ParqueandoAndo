@@ -1,0 +1,46 @@
+from django.urls import path
+
+from . import views
+
+urlpatterns = [
+    path('contacto/', views.contact_admin, name='contact_admin'),
+    path('reglamento/', views.general_rules, name='general_rules'),
+    # FR5, FR6, FR7, FR28, FR8, FR9, FR10, FR37
+    path("", views.home, name="home"),
+
+    # FR35 — información general de los parqueaderos (horarios, tarifas, normas...)
+    path("informacion/", views.parking_info_view, name="parking_info"),
+
+    # FR33 — estadísticas de ocupación (públicas)
+    path("estadisticas/", views.occupancy_statistics_view, name="occupancy_stats"),
+
+    # FR13 — historial de disponibilidad (público)
+    path("historial/", views.availability_history_view, name="availability_history"),
+
+    # FR19 — API externa de prueba (solo con DEBUG=True); ver core/external_api.py
+    path("api/simulador/disponibilidad/", views.external_api_simulator, name="external_api_simulator"),
+
+    # ── APIs JSON que mantienen la página viva sin recargarla (Sprint 3) ──
+    # El home consulta estas rutas con fetch cada cierto tiempo y repinta
+    # solo lo que cambió, para que la persona no pierda el scroll.
+    path("api/lots/", views.lots_state_api, name="lots_state_api"),
+    path("api/search/", views.search_api, name="search_api"),
+    path("api/favorites/<int:lot_id>/toggle/", views.toggle_favorite_api, name="toggle_favorite_api"),
+    # FR14 – suscripción y consulta de notificaciones de disponibilidad
+    path("api/notifications/<int:lot_id>/toggle/", views.toggle_notification_api, name="toggle_notification_api"),
+    path("api/notifications/", views.notifications_api, name="notifications_api"),
+
+    # Estado del Metro (caché + refresco en segundo plano)
+    path("metro-status/", views.metro_status_api, name="metro_status_api"),
+
+    # FR26, FR27 — detalle de parqueadero + plano interactivo (Sprint 2)
+    path("parking/<slug:slug>/", views.parking_detail, name="parking_detail"),
+    path(
+        "parking/<slug:slug>/spots/<int:spot_id>/status/",
+        views.update_spot_status,
+        name="update_spot_status",
+    ),
+]
+
+# La funcionalidad de administrador (dashboard, mapeador visual) vive en
+# la app `administration` (ver parqueando_ando/urls.py -> include('administration.urls')).

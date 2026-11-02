@@ -1,0 +1,26 @@
+
+# Entorno virtual
+venv/
+env/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# Base de datos local
+db.sqlite3
+
+# Config local / secretos
+.env
+
+# Editor / SO
+.vscode/
+.idea/
+.DS_Store
+
+# Archivos temporales de trabajo
+scratch/
+component_diagram_final.png
+deployment_diagram_final.png
+
